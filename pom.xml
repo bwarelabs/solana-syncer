@@ -1,0 +1,224 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+<modelVersion>4.0.0</modelVersion>
+<groupId>com.bwarelabs</groupId>
+
+<artifactId>syncer</artifactId>
+<packaging>jar</packaging>
+<version>1.0-SNAPSHOT</version>
+<name>syncer</name>
+<url>http://maven.apache.org</url>
+
+
+
+<properties>
+  <!-- https://maven.apache.org/general.html#encoding-warning -->
+  <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  <maven.compiler.source>17</maven.compiler.source>
+  <maven.compiler.target>17</maven.compiler.target>
+</properties>
+
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>libraries-bom</artifactId>
+      <version>26.20.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <!-- Google Cloud Bigtable HBase Client -->
+  <dependency>
+    <groupId>com.google.cloud.bigtable</groupId>
+    <artifactId>bigtable-hbase-2.x-hadoop</artifactId>
+    <version>2.14.1</version>
+  </dependency>
+
+  <!-- HBase Client -->
+  <dependency>
+    <groupId>org.apache.hbase</groupId>
+    <artifactId>hbase-client</artifactId>
+    <version>2.5.8</version>
+  </dependency>
+  <!-- Hadoop Common -->
+  <dependency>
+    <groupId>org.apache.hadoop</groupId>
+    <artifactId>hadoop-common</artifactId>
+    <version>3.3.1</version> <!-- Specify the version explicitly if not covered by BOM -->
+  </dependency>
+  <dependency>
+    <groupId>org.apache.hadoop</groupId>
+    <artifactId>hadoop-auth</artifactId>
+    <version>3.3.1</version> <!-- Specify the version explicitly if not covered by BOM -->
+  </dependency>
+  <!-- Hadoop HDFS -->
+  <dependency>
+    <groupId>org.apache.hadoop</groupId>
+    <artifactId>hadoop-hdfs</artifactId>
+    <version>3.3.1</version> <!-- Specify the version explicitly if not covered by BOM -->
+  </dependency>
+  <!-- https://mvnrepository.com/artifact/com.google.protobuf/protobuf-java -->
+  <dependency>
+    <groupId>com.google.protobuf</groupId>
+    <artifactId>protobuf-java</artifactId>
+    <version>3.25.3</version>
+  </dependency>
+  <dependency>
+    <groupId>org.apache.beam</groupId>
+    <artifactId>beam-sdks-java-core</artifactId>
+    <version>2.33.0</version>
+  </dependency>
+   <dependency>
+      <groupId>org.apache.beam</groupId>
+      <artifactId>beam-sdks-java-io-hadoop-format</artifactId>
+      <version>2.33.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.beam</groupId>
+      <artifactId>beam-runners-google-cloud-dataflow-java</artifactId>
+      <version>2.33.0</version>
+      <exclusions>
+        <exclusion>
+          <!-- Avoid conflicts with commons-logging: beam-sdks-java-io-kafka pulls in spring-core which hijacks commons-logging -->
+          <groupId>org.springframework</groupId>
+          <artifactId>spring-jcl</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+	    <groupId>org.apache.hbase</groupId>
+	    <artifactId>hbase-server</artifactId>
+    	<version>0.98.19-hadoop2</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+      <version>2.5.0</version>
+    </dependency>
+
+    <!-- Implementation deps -->
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-bigtable</artifactId>
+    </dependency>
+
+    <!-- Test -->
+    <!-- <dependency>
+      <groupId>com.google.cloud.bigtable</groupId>
+      <artifactId>bigtable-internal-test-helper</artifactId>
+      <version>2.14.1</version> {x-version-update:bigtable-client-parent:current}
+      <scope>test</scope>
+    </dependency> -->
+    <dependency>
+      <groupId>com.google.api.grpc</groupId>
+      <artifactId>grpc-google-common-protos</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.api.grpc</groupId>
+      <artifactId>grpc-google-cloud-bigtable-admin-v2</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/software.amazon.awssdk/aws-sdk-java -->
+    <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>aws-sdk-java</artifactId>
+        <version>2.26.5</version>
+        <scope>provided</scope>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/software.amazon.awssdk/s3-transfer-manager -->
+    <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>s3-transfer-manager</artifactId>
+        <version>2.26.5</version>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/software.amazon.awssdk/s3 -->
+    <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>s3</artifactId>
+        <version>2.26.5</version>
+        <scope>compile</scope>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/software.amazon.awssdk/netty-nio-client -->
+    <dependency>
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>netty-nio-client</artifactId>
+        <version>2.26.13</version>
+        <scope>compile</scope>
+    </dependency>
+
+
+
+</dependencies>
+
+<build>
+  <plugins>
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-shade-plugin</artifactId>
+      <version>3.2.0</version>
+      <executions>
+        <!-- Attach the shade goal into the package phase -->
+        <execution>
+          <phase>package</phase>
+          <goals>
+            <goal>shade</goal>
+          </goals>
+        </execution>
+      </executions>
+      <configuration>
+        <transformers>
+          <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+            <mainClass>com.bwarelabs.App</mainClass>
+          </transformer>
+        </transformers>
+        <filters>
+          <filter>
+            <artifact>*:*</artifact>
+            <excludes>
+              <exclude>META-INF/*.SF</exclude>
+              <exclude>META-INF/*.DSA</exclude>
+              <exclude>META-INF/*.RSA</exclude>
+            </excludes>
+          </filter>
+        </filters>
+
+      </configuration>
+    </plugin>
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-compiler-plugin</artifactId>
+      <version>3.8.1</version>
+      <configuration>
+        <source>17</source>
+        <target>17</target>
+      </configuration>
+    </plugin>
+    <plugin>
+        <groupId>org.xolstice.maven.plugins</groupId>
+        <artifactId>protobuf-maven-plugin</artifactId>
+        <version>0.6.1</version>
+        <extensions>true</extensions>
+        <executions>
+            <execution>
+                <goals>
+                    <goal>compile</goal>
+                    <goal>test-compile</goal>
+                </goals>
+            </execution>
+        </executions>
+        <configuration>
+            <additionalProtoPathElements>
+                <additionalProtoPathElement>${project.basedir}/src/main/resources</additionalProtoPathElement>
+            </additionalProtoPathElements>
+            <protocArtifact>com.google.protobuf:protoc:3.7.0:exe:${os.detected.classifier}</protocArtifact>
+        </configuration>
+    </plugin>
+  </plugins>
+</build>
+
+</project>
