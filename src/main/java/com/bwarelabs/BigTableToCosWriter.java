@@ -208,7 +208,7 @@ public class BigTableToCosWriter {
 
                     CompletableFuture<Void> currentBatch = CompletableFuture.allOf(batchFutures.toArray(new CompletableFuture[0]));
                     currentBatch.join();
-                    updateCheckpoint(threadId, currentStartRow);
+                    updateCheckpoint(threadId, currentStartRow, tableName);
                     batchFutures.clear();
                 }
             } catch (Exception e) {
@@ -252,7 +252,7 @@ public class BigTableToCosWriter {
                     rangeFuture.join();
                     currentBatch.join();
 
-                    updateCheckpoint(threadId, currentStartRow);
+                    updateCheckpoint(threadId, currentStartRow, tableName);
                     batchFutures.clear();
                 }
             } catch (Exception e) {
@@ -406,14 +406,19 @@ public class BigTableToCosWriter {
         return customFSDataOutputStream;
     }
 
-    private void updateCheckpoint(int threadId, String endRowKey) {
+    private void updateCheckpoint(int threadId, String endRowKey, String tableName) {
         checkpoints.put(threadId, endRowKey);
-        saveCheckpoint(threadId, endRowKey);
+        saveCheckpoint(threadId, endRowKey, tableName);
     }
 
-    private void saveCheckpoint(int threadId, String endRowKey) {
+    private void saveCheckpoint(int threadId, String endRowKey, String tableName) {
         try {
-            Files.write(Paths.get("checkpoint_" + threadId + ".txt"), endRowKey.getBytes());
+            Path tableDir = Paths.get(tableName);
+            if (!Files.exists(tableDir)) {
+                Files.createDirectories(tableDir);
+            }
+            Path checkpointFile = tableDir.resolve("checkpoint_" + threadId + ".txt");
+            Files.write(checkpointFile, endRowKey.getBytes(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         } catch (Exception e) {
             logger.severe(String.format("Error saving checkpoint for thread %s - %s", threadId, e));
         }
