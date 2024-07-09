@@ -41,7 +41,7 @@ public class CosUtils {
             throw new RuntimeException("Error loading configuration file", ex);
         }
 
-        BUCKET_NAME = Utils.getRequiredProperty(properties, "cos-utils.tencent.buket-name");
+        BUCKET_NAME = Utils.getRequiredProperty(properties, "cos-utils.tencent.bucket-name");
         COS_ENDPOINT = Utils.getRequiredProperty(properties, "cos-utils.tencent.endpoint");
         REGION = Utils.getRequiredProperty(properties, "cos-utils.tencent.region");
         AWS_ID_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.id-key");
