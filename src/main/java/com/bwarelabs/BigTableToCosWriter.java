@@ -148,7 +148,7 @@ public class BigTableToCosWriter {
         logger.info(String.format("Table '%s' processed and uploaded.", table));
     }
 
-    private String getThreadStartingKey(String tableName, String prefix, String maxPrefix) {
+    private String getThreadStartingKey(String tableName, String prefix, String maxPrefix) throws Exception {
         if (tableName == null || prefix == null || maxPrefix == null) {
             throw new IllegalArgumentException("Table name, prefix, and maxPrefix cannot be null");
         }
@@ -168,8 +168,7 @@ public class BigTableToCosWriter {
                 }
             }
         } catch (Exception e) {
-            logger.severe(String.format("Error getting starting key for thread %s - %s", prefix, e));
-            throw new RuntimeException(e);
+            throw new Exception("Error getting starting key for thread " + prefix, e);
         }
         return null;
     }
