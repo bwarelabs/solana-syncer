@@ -33,6 +33,7 @@ public class CosUtils {
     private static final String AWS_SECRET_KEY;
     private static final int MAX_CONCURRENCY;
     private static final int CONNECTION_ACQUISITION_TIMEOUT;
+    private static final int WRITE_TIMEOUT;
 
     static {
         Properties properties = new Properties();
@@ -50,12 +51,14 @@ public class CosUtils {
         AWS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
         MAX_CONCURRENCY = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.max-concurrency"));
         CONNECTION_ACQUISITION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.connection-acquisition-timeout"));
+        WRITE_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.write-timeout"));
     }
 
     private static final SdkAsyncHttpClient httpClient = NettyNioAsyncHttpClient
             .builder()
             .maxConcurrency(MAX_CONCURRENCY)
             .connectionAcquisitionTimeout(Duration.ofSeconds(CONNECTION_ACQUISITION_TIMEOUT))
+            .writeTimeout(Duration.ofSeconds(WRITE_TIMEOUT))
             .build();
 
     private static final S3AsyncClient s3AsyncClient = S3AsyncClient.builder()
