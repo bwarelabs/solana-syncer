@@ -327,7 +327,7 @@ public class BigTableToCosWriter {
             } else {
                 Scan scan = new Scan()
                         .withStartRow(Bytes.toBytes(startRowKey))
-                        .withStopRow(Bytes.toBytes(endRowKey))
+                        .withStopRow(Bytes.toBytes(endRowKey), true)
                         .setCaching(SUBRANGE_SIZE);
 
                 addListener(table.scanAll(scan), (scanResp, scanErr) -> {
