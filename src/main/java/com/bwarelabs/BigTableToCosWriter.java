@@ -202,12 +202,17 @@ public class BigTableToCosWriter {
 
                     List<CompletableFuture<Void>> uploadFutures = getUploadFutures(tableName, newStartRow, newEndRow, batch);
 
-                    return CompletableFuture.allOf(uploadFutures.toArray(new CompletableFuture[0]))
-                            .thenCompose(v -> {
-                                updateCheckpoint(threadId, newEndRow, tableName);
-                                batchCounter.reset();
-                                return processBatchTx(threadId, tableName, newEndRow, endRowKey, false, batchCounter);
-                            });
+                    if (batchCounter.incrementAndGet() >= BATCH_LIMIT) {
+                        batchCounter.reset();
+                        return CompletableFuture.allOf(uploadFutures.toArray(new CompletableFuture[0]))
+                                .thenCompose(v -> {
+                                    updateCheckpoint(threadId, newEndRow, tableName);
+                                    return processBatchTx(threadId, tableName, newEndRow, endRowKey, false, batchCounter);
+                                });
+                    }
+
+                    return processBatchTx(threadId, tableName, newEndRow, endRowKey, false, batchCounter)
+                            .thenCompose(v -> CompletableFuture.allOf(uploadFutures.toArray(new CompletableFuture[0])));
                 });
     }
 
