@@ -31,28 +31,34 @@ public class CosUtils {
     private static final String REGION;
     private static final String AWS_ID_KEY;
     private static final String AWS_SECRET_KEY;
+    private static final int MAX_CONCURRENCY;
+    private static final int CONNECTION_ACQUISITION_TIMEOUT;
+    private static final int WRITE_TIMEOUT;
 
     static {
         Properties properties = new Properties();
-        try (InputStream input = new FileInputStream("config.properties")) { // Specify the path to the external file
+        try (InputStream input = new FileInputStream("config.properties")) {
             properties.load(input);
         } catch (IOException ex) {
             logger.severe("Error loading configuration file: " + ex.getMessage());
             throw new RuntimeException("Error loading configuration file", ex);
         }
 
-        BUCKET_NAME = Utils.getRequiredProperty(properties, "cos-utils.tencent.buket-name");
+        BUCKET_NAME = Utils.getRequiredProperty(properties, "cos-utils.tencent.bucket-name");
         COS_ENDPOINT = Utils.getRequiredProperty(properties, "cos-utils.tencent.endpoint");
         REGION = Utils.getRequiredProperty(properties, "cos-utils.tencent.region");
         AWS_ID_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.id-key");
         AWS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
+        MAX_CONCURRENCY = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.max-concurrency"));
+        CONNECTION_ACQUISITION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.connection-acquisition-timeout"));
+        WRITE_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.write-timeout"));
     }
-
 
     private static final SdkAsyncHttpClient httpClient = NettyNioAsyncHttpClient
             .builder()
-            .maxConcurrency(200)
-            .connectionAcquisitionTimeout(Duration.ofSeconds(60))
+            .maxConcurrency(MAX_CONCURRENCY)
+            .connectionAcquisitionTimeout(Duration.ofSeconds(CONNECTION_ACQUISITION_TIMEOUT))
+            .writeTimeout(Duration.ofSeconds(WRITE_TIMEOUT))
             .build();
 
     private static final S3AsyncClient s3AsyncClient = S3AsyncClient.builder()
