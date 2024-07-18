@@ -1,5 +1,6 @@
 package com.bwarelabs;
 
+import com.google.bigtable.repackaged.com.google.auth.Credentials;
 import com.google.cloud.bigtable.hbase.BigtableConfiguration;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
@@ -10,6 +11,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.io.serializer.WritableSerialization;
+import org.checkerframework.checker.units.qual.C;
+
 import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 
 import java.io.IOException;
@@ -33,7 +36,8 @@ public class BigTableToCosWriter {
     private final int BATCH_LIMIT;  // Limit the number of chained batches
     private final String TX_LAST_KEY;
     private final String TX_BY_ADDR_LAST_KEY;
-    private final String HEX_LAST_KEY;
+    private final String BLOCKS_LAST_KEY;
+    private final String ENTRIES_LAST_KEY;
     private final List<CompletableFuture<Void>> allUploadFutures = new ArrayList<>();
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final AtomicReference<CompletableFuture<AsyncConnection>> future =
@@ -51,12 +55,16 @@ public class BigTableToCosWriter {
         this.BATCH_LIMIT = Integer.parseInt(Utils.getRequiredProperty(properties,"bigtable.batch-limit"));
         this.TX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-last-key");
         this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
-        this.HEX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.hex-last-key");
+        this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
+        this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
 
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
+        String pathToCredentials = Utils.getRequiredProperty(properties, "bigtable.credentials");
 
         this.configuration = BigtableConfiguration.configure(projectId, instanceId);
+        this.configuration.set("google.bigtable.auth.json.keyfile", pathToCredentials);
+
         connection = BigtableConfiguration.connect(configuration);
         executorService = Executors.newFixedThreadPool(this.THREAD_COUNT);
         loadCheckpoints();
@@ -84,7 +92,7 @@ public class BigTableToCosWriter {
     private void writeBlocksOrEntries(String table) throws Exception {
         logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
 
-        List<String[]> hexRanges = this.splitHexRange();
+        List<String[]> hexRanges = this.splitHexRange(table.equals("blocks") ? this.BLOCKS_LAST_KEY : this.ENTRIES_LAST_KEY);
         if (hexRanges.size() != this.THREAD_COUNT) {
             throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
         }
@@ -373,9 +381,9 @@ public class BigTableToCosWriter {
         }
     }
 
-    public List<String[]> splitHexRange() {
+    public List<String[]> splitHexRange(String lastKey) {
         BigInteger start = new BigInteger("0000000000000000", 16);
-        BigInteger end = new BigInteger(this.HEX_LAST_KEY, 16);
+        BigInteger end = new BigInteger(lastKey, 16);
 
         BigInteger totalRange = end.subtract(start).add(BigInteger.ONE); // +1 to include the end in the range
         BigInteger intervalSize = totalRange.divide(BigInteger.valueOf(this.THREAD_COUNT));
