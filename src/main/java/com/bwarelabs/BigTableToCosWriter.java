@@ -53,7 +53,10 @@ public class BigTableToCosWriter {
         this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
         this.HEX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.hex-last-key");
 
-        this.configuration = BigtableConfiguration.configure("emulator", "solana-ledger");
+        String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
+        String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
+
+        this.configuration = BigtableConfiguration.configure(projectId, instanceId);
         connection = BigtableConfiguration.connect(configuration);
         executorService = Executors.newFixedThreadPool(this.THREAD_COUNT);
         loadCheckpoints();
