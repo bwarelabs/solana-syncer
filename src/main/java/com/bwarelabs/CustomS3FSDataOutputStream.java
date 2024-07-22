@@ -36,6 +36,10 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
 
         try {
             uploadFuture = CosUtils.uploadToCos(s3Key, content);
+            uploadFuture.exceptionally(ex -> {
+                logger.severe(String.format("Failed to upload %s to S3 with error %s", s3Key, ex));
+                return null;
+            });
         } catch (Exception e) {
             throw new IOException(String.format("Failed to upload %s to S3", s3Key), e);
         } finally {

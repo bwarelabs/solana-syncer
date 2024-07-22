@@ -34,6 +34,7 @@ public class CosUtils {
     private static final int MAX_CONCURRENCY;
     private static final int CONNECTION_ACQUISITION_TIMEOUT;
     private static final int WRITE_TIMEOUT;
+    private static final int CONNECTION_TIMEOUT;
 
     static {
         Properties properties = new Properties();
@@ -52,6 +53,7 @@ public class CosUtils {
         MAX_CONCURRENCY = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.max-concurrency"));
         CONNECTION_ACQUISITION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.connection-acquisition-timeout"));
         WRITE_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.write-timeout"));
+        CONNECTION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.http-client.connection-timeout"));
     }
 
     private static final SdkAsyncHttpClient httpClient = NettyNioAsyncHttpClient
@@ -59,6 +61,7 @@ public class CosUtils {
             .maxConcurrency(MAX_CONCURRENCY)
             .connectionAcquisitionTimeout(Duration.ofSeconds(CONNECTION_ACQUISITION_TIMEOUT))
             .writeTimeout(Duration.ofSeconds(WRITE_TIMEOUT))
+            .connectionTimeout(Duration.ofSeconds(CONNECTION_TIMEOUT))
             .build();
 
     private static final S3AsyncClient s3AsyncClient = S3AsyncClient.builder()
