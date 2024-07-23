@@ -106,6 +106,10 @@ public class BigTableToCosWriter {
             throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
         }
 
+        for (Map.Entry<Integer, String> entry : checkpoints.entrySet()) {
+            logger.info(String.format("checkpoint %d: %s", entry.getKey(), entry.getValue()));
+        }
+
         for (int i = 0; i < this.THREAD_COUNT; i++) {
             String[] hexRange = hexRanges.get(i);
             String startRow = checkpoints.getOrDefault(i, hexRange[0]);
@@ -129,6 +133,10 @@ public class BigTableToCosWriter {
         List<String[]> txRanges = this.splitRangeTx();
         if (txRanges.size() != this.THREAD_COUNT) {
             throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
+        }
+
+        for (Map.Entry<Integer, String> entry : checkpoints.entrySet()) {
+            logger.info(String.format("checkpoint %d: %s", entry.getKey(), entry.getValue()));
         }
 
         List<String> startingKeysForTx = new ArrayList<>();
@@ -402,8 +410,10 @@ public class BigTableToCosWriter {
     }
 
     private void loadCheckpoints() {
+        String[] tableNames = new String[] { "blocks", "entries", "tx", "tx-by-addr" };
+
         for (int i = 0; i < this.THREAD_COUNT; i++) {
-            Path checkpointPath = Paths.get("checkpoint_" + i + ".txt");
+            Path checkpointPath = Paths.get(tableNames[0], "checkpoint_" + i + ".txt");
             if (Files.exists(checkpointPath)) {
                 try {
                     String checkpoint = new String(Files.readAllBytes(checkpointPath));
