@@ -168,7 +168,11 @@ public class BigTableToCosWriter {
             boolean isCheckpointStart = checkpoints.get(i) != null;
             String endRow;
             if (i == this.THREAD_COUNT - 1) {
-                endRow = this.TX_LAST_KEY;
+                if (table.equals("tx")) {
+                    endRow = this.TX_LAST_KEY;
+                } else {
+                    endRow = this.TX_BY_ADDR_LAST_KEY;
+                }
             } else {
                 endRow = startingKeysForTx.get(i + 1);
                 if (table.equals("tx-by-addr") && startingKeysForTx.get(i + 1) == null) {
