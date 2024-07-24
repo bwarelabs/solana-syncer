@@ -16,15 +16,15 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private final String s3Key;
     private CompletableFuture<CompletedUpload> uploadFuture;
 
-    public CustomS3FSDataOutputStream(Path slotRangeDir, String category) {
-        this(new ByteArrayOutputStream(), slotRangeDir, category);
+    public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) {
+        this(new ByteArrayOutputStream(), slotRangeDir, category , syncType);
         logger.info("CustomS3FSDataOutputStream created for key: " + s3Key);
     }
 
-    private CustomS3FSDataOutputStream(ByteArrayOutputStream buffer, Path slotRangeDir, String category) {
+    private CustomS3FSDataOutputStream(ByteArrayOutputStream buffer, Path slotRangeDir, String category, String syncType) {
         super(buffer, null);
         this.buffer = buffer;
-        this.s3Key = slotRangeDir.getFileName() + "/" + category + "/" + category + ".seq";
+        this.s3Key = syncType + "/" + slotRangeDir.getFileName() + "/" + category + "/" + category + ".seq";
     }
 
     @Override
