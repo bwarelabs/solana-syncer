@@ -38,6 +38,7 @@ import java.util.stream.Stream;
  */
 public class GeyserPluginToCosWriter {
     private static final Logger logger = Logger.getLogger(GeyserPluginToCosWriter.class.getName());
+    private static final String syncType = "live_sync";
 
     public static void watchDirectory(Path path) {
         logger.info("Starting watch process...");
@@ -104,16 +105,16 @@ public class GeyserPluginToCosWriter {
         hadoopConfig.setStrings("io.serializations", WritableSerialization.class.getName(), ResultSerialization.class.getName());
 
         try (
-                CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(slotRangeDir, "entries");
+                CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(slotRangeDir, "entries", syncType);
                 CustomSequenceFileWriter entriesWriter = new CustomSequenceFileWriter(hadoopConfig, entriesStream);
 
-                CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(slotRangeDir, "blocks");
+                CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(slotRangeDir, "blocks", syncType);
                 CustomSequenceFileWriter blocksWriter = new CustomSequenceFileWriter(hadoopConfig, blocksStream);
 
-                CustomS3FSDataOutputStream txStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx");
+                CustomS3FSDataOutputStream txStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx", syncType);
                 CustomSequenceFileWriter txWriter = new CustomSequenceFileWriter(hadoopConfig, txStream);
 
-                CustomS3FSDataOutputStream txByAddrStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx_by_addr");
+                CustomS3FSDataOutputStream txByAddrStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx_by_addr", syncType);
                 CustomSequenceFileWriter txByAddrWriter = new CustomSequenceFileWriter(hadoopConfig, txByAddrStream);
 
                 Stream<Path> slotDirs = Files.list(slotRangeDir)

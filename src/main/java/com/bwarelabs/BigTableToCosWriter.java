@@ -47,6 +47,7 @@ public class BigTableToCosWriter {
     private final AtomicReference<CompletableFuture<AsyncConnection>> future = new AtomicReference<>();
     private final AtomicBoolean isClosed = new AtomicBoolean(false);
     private final Configuration configuration;
+    private final String syncType = "initial_sync";
 
     private final char[] CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
 
@@ -365,7 +366,7 @@ public class BigTableToCosWriter {
         }
 
         CustomS3FSDataOutputStream customFSDataOutputStream = new CustomS3FSDataOutputStream(
-                Paths.get("output/sequencefile/" + tableName + "/range_" + startRowKey + "_" + endRowKey), tableName);
+                Paths.get("output/sequencefile/" + tableName + "/range_" + startRowKey + "_" + endRowKey), tableName, this.syncType);
         CustomSequenceFileWriter customWriter = null;
 
         try {
