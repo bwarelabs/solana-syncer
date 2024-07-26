@@ -75,7 +75,7 @@ public class GeyserPluginToCosWriter {
                         Path child = path.resolve(fileName);
 
                         if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
-                            CompletableFuture<Void> future = processSlotRange(child);
+                            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> processSlotRange(child));
                             futures.add(future);
                         }
                     }
@@ -139,7 +139,7 @@ public class GeyserPluginToCosWriter {
                     blocksStream.getUploadFuture(),
                     txStream.getUploadFuture(),
                     txByAddrStream.getUploadFuture()
-            ).thenRun(() -> {
+            ).thenRunAsync(() -> {
                 logger.info("Slot range processed: " + slotRangeDir.getFileName());
                 try {
                     deleteDirectory(slotRangeDir);
