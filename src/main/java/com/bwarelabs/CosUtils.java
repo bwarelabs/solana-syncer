@@ -55,6 +55,7 @@ public class CosUtils {
             .endpointOverride(URI.create(COS_ENDPOINT))
             .region(Region.of(REGION))
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(AWS_ID_KEY, AWS_SECRET_KEY)))
+            .forcePathStyle(true)
             .build();
 
     private static final S3TransferManager transferManager = S3TransferManager.builder()
@@ -77,8 +78,8 @@ public class CosUtils {
                     .key(key)
                     .build();
 
-//            BlockingInputStreamAsyncRequestBody body = AsyncRequestBody.forBlockingInputStream(null); // 'null' indicates a stream will be provided later.
-            BlockingInputStreamAsyncRequestBody body = BlockingInputStreamAsyncRequestBody.builder().contentLength(null).subscribeTimeout(Duration.ofSeconds(240)).build();
+            //BlockingInputStreamAsyncRequestBody body = AsyncRequestBody.forBlockingInputStream(null); // 'null' indicates a stream will be provided later.
+            BlockingInputStreamAsyncRequestBody body = BlockingInputStreamAsyncRequestBody.builder().contentLength(null).subscribeTimeout(Duration.ofSeconds(120)).build();
 
             UploadRequest uploadRequest = UploadRequest.builder()
                     .putObjectRequest(putObjectRequest)
@@ -86,21 +87,30 @@ public class CosUtils {
                     .addTransferListener(LoggingTransferListener.create())
                     .build();
 
+
+            logger.info(String.format("Starting upload for: %s", key));
             Upload upload = transferManager.upload(uploadRequest);
+            logger.info(String.format("Started upload for: %s", key));
 
-            CompletableFuture<Void> writeFuture = CompletableFuture.runAsync(() -> {
-                try {
-                    body.writeInputStream(inputStream);
-                } catch (Exception e) {
-                    throw new RuntimeException("Failed to write input stream to body", e);
-                }
-            }, executorService);
+            body.writeInputStream(inputStream);
 
-            return writeFuture.thenCompose(v -> upload.completionFuture())
-                    .exceptionally(ex -> {
-                        throw new RuntimeException("Upload to COS failed", ex);
-                    });
+            return upload.completionFuture();
+
+            //CompletableFuture<Void> writeFuture = CompletableFuture.runAsync(() -> {
+            //    try {
+            //        body.writeInputStream(inputStream);
+            //    } catch (Exception e) {
+            //        throw new RuntimeException("Failed to write input stream to body", e);
+            //    }
+            //}, executorService);
+
+            //return writeFuture.thenCompose(v -> upload.completionFuture())
+            //        .exceptionally(ex -> {
+            //            throw new RuntimeException("Upload to COS failed", ex);
+            //        });
         } catch (Exception e) {
+            logger.severe("Input stream cannot be null");
+            e.printStackTrace();
             throw new RuntimeException("Error initiating upload to COS", e);
         }
     }
