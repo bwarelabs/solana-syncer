@@ -36,7 +36,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private void initiateUpload() {
         logger.info(String.format("Initiating upload for: %s", s3Key));
         try {
-            uploadFuture = CosUtils.uploadToCos(s3Key, pipedInputStream);
+            uploadFuture = CompletableFuture.supplyAsync(() -> CosUtils.uploadToCos(s3Key, pipedInputStream)).thenCompose(upload -> upload);
 
             uploadFuture.exceptionally(ex -> {
                 logger.severe(String.format("Failed to upload %s to S3", s3Key));

@@ -39,6 +39,7 @@ public class CustomSequenceFileWriter implements AutoCloseable {
             throw new IllegalArgumentException("Key and value cannot be null");
         }
         this.writer.append(key, value);
+        //this.writer.flush();
     }
 
     @Override
