@@ -134,20 +134,21 @@ public class GeyserPluginToCosWriter {
             txWriter.close();
             txByAddrWriter.close();
 
-            return CompletableFuture.allOf(
-                    entriesStream.getUploadFuture(),
-                    blocksStream.getUploadFuture(),
-                    txStream.getUploadFuture(),
-                    txByAddrStream.getUploadFuture()
-            ).thenRun(() -> {
-                logger.info("Slot range processed: " + slotRangeDir.getFileName());
-                try {
-                    deleteDirectory(slotRangeDir);
-                    logger.info("Deleted slot range: " + slotRangeDir.getFileName());
-                } catch (Exception e) {
-                    logger.severe(String.format("Error deleting slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
-                }
-            });
+            return CompletableFuture.completedFuture(null);
+            //return CompletableFuture.allOf(
+            //        entriesStream.getUploadFuture(),
+            //        blocksStream.getUploadFuture(),
+            //        txStream.getUploadFuture(),
+            //        txByAddrStream.getUploadFuture()
+            //).thenRun(() -> {
+            //    logger.info("Slot range processed: " + slotRangeDir.getFileName());
+            //    try {
+            //        deleteDirectory(slotRangeDir);
+            //        logger.info("Deleted slot range: " + slotRangeDir.getFileName());
+            //    } catch (Exception e) {
+            //        logger.severe(String.format("Error deleting slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
+            //    }
+            //});
         } catch (Exception e) {
             logger.severe(String.format("Error processing slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
             return CompletableFuture.completedFuture(null);
