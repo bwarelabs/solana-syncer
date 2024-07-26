@@ -129,7 +129,7 @@ public class BigTableToCosWriter {
             tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart));
         }
 
-        for (ForkJoinTask task: tasks) {
+        for (ForkJoinTask task : tasks) {
             task.join();
         }
 
@@ -145,6 +145,7 @@ public class BigTableToCosWriter {
         }
 
         List<String> startingKeysForTx = new ArrayList<>();
+        List<ForkJoinTask> tasks = new ArrayList<>();
         for (int i = 0; i < this.THREAD_COUNT; i++) {
             String[] txRange = txRanges.get(i);
             String txStartKey = getThreadStartingKeyForTx(table, txRange[0], txRange[1]);
@@ -181,7 +182,11 @@ public class BigTableToCosWriter {
             }
 
             logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
-            runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart);
+            tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart));
+        }
+
+        for (ForkJoinTask task : tasks) {
+            task.join();
         }
 
         logger.info(String.format("Table '%s' processed and uploaded.", table));
@@ -228,8 +233,9 @@ public class BigTableToCosWriter {
 
         logger.info(String.format("Queueing task for thread %s, table %s, range %s - %s", threadId, tableName,
                 currentStartRow, endRowKey));
+        Connection connection = null;
         try {
-            Connection connection = ConnectionFactory.createConnection(configuration);
+            connection = ConnectionFactory.createConnection(configuration);
             while (currentStartRow.compareTo(endRowKey) < 0) {
                 String currentEndRow = fetchBatch(connection, tableName, currentStartRow, endRowKey, includeStartRow);
                 if (currentEndRow == null) {
@@ -247,6 +253,16 @@ public class BigTableToCosWriter {
             logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
                     currentStartRow, endRowKey, tableName), e);
             e.printStackTrace();
+        } finally {
+            try {
+                if (connection != null) {
+                    connection.close();
+                }
+            } catch (IOException e) {
+                logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
+                        currentStartRow, endRowKey, tableName), e);
+                e.printStackTrace();
+            }
         }
     }
 
@@ -310,7 +326,6 @@ public class BigTableToCosWriter {
             logger.info(String.format(" Closing sequence file writer for %s from %s to %s",
                     tableName, startRowKey, endRowKey));
             customWriter.close();
-            customFSDataOutputStream.close();
         }
 
         customFSDataOutputStream.getUploadFuture().join();
