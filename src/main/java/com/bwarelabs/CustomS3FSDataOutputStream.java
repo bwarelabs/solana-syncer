@@ -54,7 +54,6 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
         logger.info("Closing stream for: " + s3Key);
         super.close();
         pipedOutputStream.close();
-        pipedInputStream.close();
     }
 
     public CompletableFuture<CompletedUpload> getUploadFuture() {
