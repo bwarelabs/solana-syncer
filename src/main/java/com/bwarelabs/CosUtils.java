@@ -93,6 +93,7 @@ public class CosUtils {
             logger.info(String.format("Started upload for: %s", key));
 
             body.writeInputStream(inputStream);
+            logger.info(String.format("Wrote input stream for: %s", key));
 
             return upload.completionFuture();
 
