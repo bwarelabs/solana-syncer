@@ -55,7 +55,7 @@ public class CosUtils {
             .endpointOverride(URI.create(COS_ENDPOINT))
             .region(Region.of(REGION))
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(AWS_ID_KEY, AWS_SECRET_KEY)))
-            .forcePathStyle(true)
+            .forcePathStyle(COS_ENDPOINT.contains("minio"))
             .build();
 
     private static final S3TransferManager transferManager = S3TransferManager.builder()
