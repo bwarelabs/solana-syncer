@@ -11,6 +11,7 @@ import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.slf4j.LoggerFactory;
+import com.qcloud.cos.exception.*;
 
 import java.io.IOException;
 import java.math.BigInteger;
@@ -237,7 +238,7 @@ public class BigTableToCosWriter {
         try {
             connection = ConnectionFactory.createConnection(configuration);
             while (currentStartRow.compareTo(endRowKey) < 0) {
-                String currentEndRow = fetchBatch(connection, tableName, currentStartRow, endRowKey, includeStartRow);
+                String currentEndRow = fetchBatch(connection, tableName, currentStartRow, endRowKey, includeStartRow, 0);
                 if (currentEndRow == null) {
                     // empty batch, we're done
                     return;
@@ -267,7 +268,10 @@ public class BigTableToCosWriter {
     }
 
     private String fetchBatch(Connection conn, String tableName, String startRowKey, String endRowKey,
-            boolean includeStartRow) throws IOException {
+            boolean includeStartRow, int retryCount) throws IOException {
+        if (retryCount > 1) {
+            return null;
+        }
         CustomS3FSDataOutputStream customFSDataOutputStream = getS3OutputStream(tableName, startRowKey,
                 endRowKey);
         Configuration hadoopConfig = new Configuration();
@@ -297,14 +301,16 @@ public class BigTableToCosWriter {
                 Scan scan = new Scan()
                         .withStartRow(Bytes.toBytes(startRowKey), includeStartRow)
                         .withStopRow(Bytes.toBytes(endRowKey), true)
-                        .setCaching(BATCH_LIMIT)
                         .setLimit(SUBRANGE_SIZE);
 
                 ResultScanner scanner = table.getScanner(scan);
+                int rows = 0;
                 while (true) {
                     Result[] batch = scanner.next(BATCH_LIMIT);
+                    rows += batch.length;
                     if (batch.length > 0) {
-                        logger.info(String.format("Fetched rows between %s - %s", Bytes.toString(batch[0].getRow()),
+                        logger.info(String.format("Fetched %d rows between %s - %s", batch.length,
+                                Bytes.toString(batch[0].getRow()),
                                 Bytes.toString(batch[batch.length - 1].getRow())));
                     }
                     for (Result result : batch) {
@@ -319,8 +325,13 @@ public class BigTableToCosWriter {
                     if (batch.length == 0) {
                         break;
                     }
+                    if (!scanner.renewLease()) {
+                        logger.info(String.format("Failed to renew lease for batch between %s - %s",
+                                Bytes.toString(batch[0].getRow()),
+                                Bytes.toString(batch[batch.length - 1].getRow())));
+                    }
                 }
-                logger.info(String.format("After fetch batch for %s - %s", startRowKey, endRowKey));
+                logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
             }
         } finally {
             logger.info(String.format(" Closing sequence file writer for %s from %s to %s",
@@ -335,6 +346,16 @@ public class BigTableToCosWriter {
             logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
                     startRowKey, endRowKey, tableName), e);
             e.printStackTrace();
+            fetchBatch(conn, tableName, startRowKey, endRowKey,
+                    includeStartRow, retryCount + 1);
+        } catch (CosServiceException e) {
+            e.printStackTrace();
+            fetchBatch(conn, tableName, startRowKey, endRowKey,
+                    includeStartRow, retryCount + 1);
+        } catch (CosClientException e) {
+            e.printStackTrace();
+            fetchBatch(conn, tableName, startRowKey, endRowKey,
+                    includeStartRow, retryCount + 1);
         }
 
         if (lastRow != null) {
