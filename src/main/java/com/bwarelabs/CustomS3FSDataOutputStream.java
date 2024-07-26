@@ -3,6 +3,8 @@ package com.bwarelabs;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.transfer.s3.model.CompletedUpload;
+import com.qcloud.cos.model.*;
+import com.qcloud.cos.transfer.*;
 
 import java.io.IOException;
 import java.io.PipedInputStream;
@@ -18,7 +20,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private final PipedOutputStream pipedOutputStream;
     private final PipedInputStream pipedInputStream;
     private final String s3Key;
-    private CompletableFuture<CompletedUpload> uploadFuture;
+    private Upload uploadFuture;
 
     public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) throws IOException {
         this(new PipedOutputStream(), slotRangeDir, category, syncType);
@@ -36,13 +38,15 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private void initiateUpload() {
         logger.info(String.format("Initiating upload for: %s", s3Key));
         try {
-            uploadFuture = CompletableFuture.supplyAsync(() -> CosUtils.uploadToCos(s3Key, pipedInputStream)).thenCompose(upload -> upload);
+            uploadFuture = CosUtils.uploadToCos(s3Key, pipedInputStream);
 
+            /*
             uploadFuture.exceptionally(ex -> {
                 logger.severe(String.format("Failed to upload %s to S3", s3Key));
                 ex.printStackTrace();
                 return null;
             });
+            */
         } catch (Exception e) {
             logger.severe(String.format("Failed to initiate upload %s to S3", s3Key));
             e.printStackTrace();
@@ -56,7 +60,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
         pipedOutputStream.close();
     }
 
-    public CompletableFuture<CompletedUpload> getUploadFuture() {
+    public Upload getUploadFuture() {
         return uploadFuture;
     }
 

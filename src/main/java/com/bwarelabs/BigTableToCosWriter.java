@@ -276,9 +276,6 @@ public class BigTableToCosWriter {
                 ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
-        RawLocalFileSystem fs = new RawLocalFileSystem();
-        fs.setConf(hadoopConfig);
-
         CustomSequenceFileWriter customWriter = null;
         Result lastRow = null;
         try {
@@ -330,10 +327,15 @@ public class BigTableToCosWriter {
                     tableName, startRowKey, endRowKey));
             customWriter.close();
             customFSDataOutputStream.close();
-            fs.close();
         }
 
-        customFSDataOutputStream.getUploadFuture().join();
+        try {
+            customFSDataOutputStream.getUploadFuture().waitForUploadResult();
+        } catch (InterruptedException e) {
+            logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
+                    startRowKey, endRowKey, tableName), e);
+            e.printStackTrace();
+        }
 
         if (lastRow != null) {
             return Bytes.toString(lastRow.getRow());
