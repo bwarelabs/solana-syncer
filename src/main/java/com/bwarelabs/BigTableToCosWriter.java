@@ -67,11 +67,11 @@ public class BigTableToCosWriter {
                 pathToCredentials);
 
         connection = BigtableConfiguration.connect(configuration);
-        loadCheckpoints();
     }
 
     public void write(String tableName) throws Exception {
         logger.info("Starting BigTable to COS writer");
+        loadCheckpoints(tableName);
 
         if (tableName == null || tableName.trim().isEmpty()) {
             logger.severe("Table name cannot be null or empty");
@@ -367,7 +367,7 @@ public class BigTableToCosWriter {
 
     private void saveCheckpoint(int threadId, String endRowKey, String tableName) {
         try {
-            Path tableDir = Paths.get(tableName);
+            Path tableDir = Paths.get("checkpoints/" + tableName);
             if (!Files.exists(tableDir)) {
                 Files.createDirectories(tableDir);
             }
@@ -379,9 +379,9 @@ public class BigTableToCosWriter {
         }
     }
 
-    private void loadCheckpoints() {
+    private void loadCheckpoints(String tableName) {
         for (int i = 0; i < this.THREAD_COUNT; i++) {
-            Path checkpointPath = Paths.get("checkpoint_" + i + ".txt");
+            Path checkpointPath = Paths.get("checkpoints/" + tableName + "checkpoint_" + i + ".txt");
             if (Files.exists(checkpointPath)) {
                 try {
                     String checkpoint = new String(Files.readAllBytes(checkpointPath));
