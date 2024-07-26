@@ -276,6 +276,9 @@ public class BigTableToCosWriter {
                 ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
+        RawLocalFileSystem fs = new RawLocalFileSystem();
+        fs.setConf(hadoopConfig);
+
         CustomSequenceFileWriter customWriter = null;
         Result lastRow = null;
         try {
@@ -297,12 +300,12 @@ public class BigTableToCosWriter {
                 Scan scan = new Scan()
                         .withStartRow(Bytes.toBytes(startRowKey), includeStartRow)
                         .withStopRow(Bytes.toBytes(endRowKey), true)
-                        .setCaching(SUBRANGE_SIZE)
+                        .setCaching(BATCH_LIMIT)
                         .setLimit(SUBRANGE_SIZE);
 
                 ResultScanner scanner = table.getScanner(scan);
                 while (true) {
-                    Result[] batch = scanner.next(SUBRANGE_SIZE);
+                    Result[] batch = scanner.next(BATCH_LIMIT);
                     if (batch.length > 0) {
                         logger.info(String.format("Fetched rows between %s - %s", Bytes.toString(batch[0].getRow()),
                                 Bytes.toString(batch[batch.length - 1].getRow())));
@@ -326,6 +329,8 @@ public class BigTableToCosWriter {
             logger.info(String.format(" Closing sequence file writer for %s from %s to %s",
                     tableName, startRowKey, endRowKey));
             customWriter.close();
+            customFSDataOutputStream.close();
+            fs.close();
         }
 
         customFSDataOutputStream.getUploadFuture().join();
