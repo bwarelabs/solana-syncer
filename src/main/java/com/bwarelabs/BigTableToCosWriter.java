@@ -21,6 +21,7 @@ import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
 import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 
 import java.io.FileInputStream;
@@ -225,10 +226,10 @@ public class BigTableToCosWriter {
             int prefixValue = prefix.charAt(0);
             int maxPrefixValue = maxPrefix.charAt(0);
             for (int i = prefixValue; i <= maxPrefixValue; i++) {
-                Query query = Query.create(tableName).prefix(String.valueOf((char) i)).limit(1);
+                Query query = Query.create(TableId.of(tableName)).prefix(String.valueOf((char) i)).limit(1);
                 List<Row> rows = dataClient.readRowsCallable().all().call(query);
                 if (rows.size() > 0) {
-                    return rows.get(0).toString();
+                    return rows.get(0).getKey().toStringUtf8();
                 }
             }
         } catch (Exception e) {
@@ -295,7 +296,7 @@ public class BigTableToCosWriter {
 
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
-            Query query = Query.create(tableName).range(range).limit(SUBRANGE_SIZE);
+            Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
             int rows = 0;
             logger.info(String.format("After query fetch batch for %s - %s", startRowKey, endRowKey));
             for (Row row : dataClient.readRows(query)) {
@@ -335,7 +336,7 @@ public class BigTableToCosWriter {
         }
 
         if (lastRow != null) {
-            return lastRow.getKey().toString();
+            return lastRow.getKey().toStringUtf8();
         }
         return null;
     }
