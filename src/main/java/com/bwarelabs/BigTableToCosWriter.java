@@ -51,6 +51,7 @@ public class BigTableToCosWriter {
     private final String TX_LAST_KEY;
     private final String TX_BY_ADDR_LAST_KEY;
     private final String BLOCKS_LAST_KEY;
+    private final String ENTRIES_START_KEY;
     private final String ENTRIES_LAST_KEY;
     private final String SYNC_TYPE;
     private final Map<Integer, String> checkpoints = new HashMap<>();
@@ -69,6 +70,7 @@ public class BigTableToCosWriter {
         this.TX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-last-key");
         this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
         this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
+        this.ENTRIES_START_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-start-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
         this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
 
@@ -132,8 +134,11 @@ public class BigTableToCosWriter {
     private void writeBlocksOrEntries(String table) throws Exception {
         logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
 
+        String lastKey = table.equals("entries") ? this.ENTRIES_LAST_KEY : this.BLOCKS_LAST_KEY;
+        String startKey = table.equals("entries") ? this.ENTRIES_START_KEY : "0000000000000000";
+
         List<String[]> hexRanges = this
-                .splitHexRange(table.equals("blocks") ? this.BLOCKS_LAST_KEY : this.ENTRIES_LAST_KEY);
+                .splitHexRange(startKey, lastKey);
         if (hexRanges.size() != this.THREAD_COUNT) {
             throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
         }
@@ -391,8 +396,8 @@ public class BigTableToCosWriter {
         }
     }
 
-    public List<String[]> splitHexRange(String lastKey) {
-        BigInteger start = new BigInteger("0000000000000000", 16);
+    public List<String[]> splitHexRange(String startKey, String lastKey) {
+        BigInteger start = new BigInteger(startKey, 16);
         BigInteger end = new BigInteger(lastKey, 16);
 
         BigInteger totalRange = end.subtract(start).add(BigInteger.ONE);
