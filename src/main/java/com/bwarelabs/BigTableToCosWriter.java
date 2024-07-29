@@ -286,6 +286,12 @@ public class BigTableToCosWriter {
         if (retryCount > 1) {
             return null;
         }
+
+        if (tableName.equals("blocks") || tableName.equals("entries")) {
+            BigInteger nonFormatedEndRowKey = new BigInteger(startRowKey, 16).add(BigInteger.valueOf(this.SUBRANGE_SIZE)).subtract(BigInteger.ONE);
+            endRowKey = this.formatHex(nonFormatedEndRowKey);
+        }
+
         CustomS3FSDataOutputStream customFSDataOutputStream = getS3OutputStream(tableName, startRowKey,
                 endRowKey);
         Configuration hadoopConfig = new Configuration();
