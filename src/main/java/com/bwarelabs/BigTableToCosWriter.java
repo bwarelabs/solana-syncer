@@ -21,6 +21,7 @@ import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
 import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -123,6 +124,7 @@ public class BigTableToCosWriter {
             logger.severe("Invalid table name: " + tableName);
         }
 
+        dataClient.close();
         logger.info("BigTable to COS writer completed");
     }
 
@@ -292,7 +294,8 @@ public class BigTableToCosWriter {
             customWriter = new CustomSequenceFileWriter(hadoopConfig, customFSDataOutputStream);
 
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
-            Query query = Query.create(tableName).range(startRowKey, endRowKey).limit(SUBRANGE_SIZE);
+            ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
+            Query query = Query.create(tableName).range(range).limit(SUBRANGE_SIZE);
             int rows = 0;
             logger.info(String.format("After query fetch batch for %s - %s", startRowKey, endRowKey));
             for (Row row : dataClient.readRows(query)) {
