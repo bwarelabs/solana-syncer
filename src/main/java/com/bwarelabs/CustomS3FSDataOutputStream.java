@@ -2,7 +2,6 @@ package com.bwarelabs;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.slf4j.LoggerFactory;
-import software.amazon.awssdk.transfer.s3.model.CompletedUpload;
 import com.qcloud.cos.model.*;
 import com.qcloud.cos.transfer.*;
 

@@ -1,18 +1,28 @@
 package com.bwarelabs;
 
-import com.google.cloud.bigtable.hbase.BigtableConfiguration;
-import com.google.cloud.bigtable.hbase.BigtableOptionsFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.serializer.WritableSerialization;
+import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.slf4j.LoggerFactory;
 import com.qcloud.cos.exception.*;
 
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.api.gax.core.CredentialsProvider;
+import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.auth.oauth2.GoogleCredentials;
+import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
+import com.google.api.gax.core.GoogleCredentialsProvider;
+import com.google.cloud.bigtable.data.v2.models.Query;
+import com.google.cloud.bigtable.data.v2.models.Row;
+
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -33,7 +43,6 @@ public class BigTableToCosWriter {
     private static final Logger logger = Logger.getLogger(BigTableToCosWriter.class.getName());
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(BigTableToCosWriter.class);
 
-    private final Connection connection;
     private final int THREAD_COUNT;
     private final int SUBRANGE_SIZE;
     private final int BATCH_LIMIT;
@@ -42,8 +51,9 @@ public class BigTableToCosWriter {
     private final String BLOCKS_LAST_KEY;
     private final String ENTRIES_LAST_KEY;
     private final Map<Integer, String> checkpoints = new HashMap<>();
-    private final Configuration configuration;
-    private final String syncType = "initial_sync";
+    private final BigtableDataSettings settings;
+    private final String syncType = "adila";
+    private final BigtableDataClient dataClient;
 
     private final char[] CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
 
@@ -62,12 +72,19 @@ public class BigTableToCosWriter {
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
         String pathToCredentials = Utils.getRequiredProperty(properties, "bigtable.credentials");
+        // Load credentials from JSON key file
+        GoogleCredentials credentials = GoogleCredentials.fromStream(new FileInputStream(pathToCredentials));
 
-        this.configuration = BigtableConfiguration.configure(projectId, instanceId);
-        this.configuration.set(BigtableOptionsFactory.BIGTABLE_SERVICE_ACCOUNT_JSON_KEYFILE_LOCATION_KEY,
-                pathToCredentials);
+        BigtableDataSettings.Builder settingsBuilder = BigtableDataSettings.newBuilder().setProjectId(projectId)
+                .setInstanceId(instanceId)
+                .setAppProfileId("default")
+                .setCredentialsProvider(FixedCredentialsProvider.create(credentials));
 
-        connection = BigtableConfiguration.connect(configuration);
+        settingsBuilder
+                .stubSettings();
+
+        settings = settingsBuilder.build();
+        dataClient = BigtableDataClient.create(settings);
     }
 
     public void write(String tableName) throws Exception {
@@ -106,7 +123,6 @@ public class BigTableToCosWriter {
         }
 
         logger.info("BigTable to COS writer completed");
-        connection.close();
     }
 
     private void writeBlocksOrEntries(String table) throws Exception {
@@ -202,18 +218,14 @@ public class BigTableToCosWriter {
             throw new IllegalArgumentException("Invalid table name: " + tableName + ". Must be 'tx' or 'tx-by-addr'");
         }
 
-        try (Table table = connection.getTable(TableName.valueOf(tableName))) {
+        try {
             int prefixValue = prefix.charAt(0);
             int maxPrefixValue = maxPrefix.charAt(0);
             for (int i = prefixValue; i <= maxPrefixValue; i++) {
-                Scan scan = new Scan();
-                scan.withStartRow(Bytes.toBytes(String.valueOf((char) i)));
-                scan.setLimit(1);
-                try (ResultScanner scanner = table.getScanner(scan)) {
-                    Result next = scanner.next();
-                    if (next != null) {
-                        return Bytes.toString(next.getRow());
-                    }
+                Query query = Query.create(tableName).prefix(String.valueOf((char) i)).limit(1);
+                List<Row> rows = dataClient.readRowsCallable().all().call(query);
+                if (rows.size() > 0) {
+                    return rows.get(0).toString();
                 }
             }
         } catch (Exception e) {
@@ -232,13 +244,16 @@ public class BigTableToCosWriter {
     private void splitRangeAndChainUploads(int threadId, String tableName, String currentStartRow,
             String endRowKey, boolean includeStartRow) {
 
+        if (currentStartRow.compareTo(endRowKey) >= 0) {
+            return;
+        }
+
         logger.info(String.format("Queueing task for thread %s, table %s, range %s - %s", threadId, tableName,
                 currentStartRow, endRowKey));
-        Connection connection = null;
         try {
-            connection = ConnectionFactory.createConnection(configuration);
             while (currentStartRow.compareTo(endRowKey) < 0) {
-                String currentEndRow = fetchBatch(connection, tableName, currentStartRow, endRowKey, includeStartRow, 0);
+                String currentEndRow = fetchBatch(tableName, currentStartRow, endRowKey, includeStartRow,
+                        0);
                 if (currentEndRow == null) {
                     // empty batch, we're done
                     return;
@@ -250,24 +265,14 @@ public class BigTableToCosWriter {
                 currentStartRow = currentEndRow;
                 includeStartRow = false;
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
                     currentStartRow, endRowKey, tableName), e);
             e.printStackTrace();
-        } finally {
-            try {
-                if (connection != null) {
-                    connection.close();
-                }
-            } catch (IOException e) {
-                logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
-                        currentStartRow, endRowKey, tableName), e);
-                e.printStackTrace();
-            }
         }
     }
 
-    private String fetchBatch(Connection conn, String tableName, String startRowKey, String endRowKey,
+    private String fetchBatch(String tableName, String startRowKey, String endRowKey,
             boolean includeStartRow, int retryCount) throws IOException {
         if (retryCount > 1) {
             return null;
@@ -281,62 +286,29 @@ public class BigTableToCosWriter {
                 WritableSerialization.class.getName());
 
         CustomSequenceFileWriter customWriter = null;
-        Result lastRow = null;
+        Row lastRow = null;
         try {
             customWriter = new CustomSequenceFileWriter(hadoopConfig, customFSDataOutputStream);
 
-            Table table = conn.getTable(TableName.valueOf(tableName));
-
-            if (startRowKey.equals(endRowKey)) {
-                assert false;
-                Get get = new Get(Bytes.toBytes(startRowKey));
-                Result result = table.get(get);
-                if (!result.isEmpty()) {
-                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(result.getRow());
-                    customWriter.append(rowKey, result);
-                    lastRow = result;
-                }
-            } else {
-                logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
-                Scan scan = new Scan()
-                        .withStartRow(Bytes.toBytes(startRowKey), includeStartRow)
-                        .withStopRow(Bytes.toBytes(endRowKey), true)
-                        .setLimit(SUBRANGE_SIZE);
-
-                ResultScanner scanner = table.getScanner(scan);
-                int rows = 0;
-                while (true) {
-                    Result[] batch = scanner.next(BATCH_LIMIT);
-                    rows += batch.length;
-                    if (batch.length > 0) {
-                        logger.info(String.format("Fetched %d rows between %s - %s", batch.length,
-                                Bytes.toString(batch[0].getRow()),
-                                Bytes.toString(batch[batch.length - 1].getRow())));
-                    }
-                    for (Result result : batch) {
-                        ImmutableBytesWritable rowKey = new ImmutableBytesWritable(result.getRow());
-                        customWriter.append(rowKey, result);
-                        lastRow = result;
-                    }
-                    if (batch.length > 0) {
-                        logger.info(String.format("Wrote rows between %s - %s", Bytes.toString(batch[0].getRow()),
-                                Bytes.toString(batch[batch.length - 1].getRow())));
-                    }
-                    if (batch.length == 0) {
-                        break;
-                    }
-                    if (!scanner.renewLease()) {
-                        logger.info(String.format("Failed to renew lease for batch between %s - %s",
-                                Bytes.toString(batch[0].getRow()),
-                                Bytes.toString(batch[batch.length - 1].getRow())));
-                    }
-                }
-                logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
+            logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
+            Query query = Query.create(tableName).range(startRowKey, endRowKey).limit(SUBRANGE_SIZE);
+            int rows = 0;
+            logger.info(String.format("After query fetch batch for %s - %s", startRowKey, endRowKey));
+            for (Row row : dataClient.readRows(query)) {
+                rows++;
+                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                customWriter.append(rowKey, row);
+                lastRow = row;
             }
+            logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
+        } catch (Exception e) {
+            e.printStackTrace();
         } finally {
             logger.info(String.format(" Closing sequence file writer for %s from %s to %s",
                     tableName, startRowKey, endRowKey));
-            customWriter.close();
+            if (customWriter != null) {
+                customWriter.close();
+            }
             customFSDataOutputStream.close();
         }
 
@@ -346,20 +318,20 @@ public class BigTableToCosWriter {
             logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
                     startRowKey, endRowKey, tableName), e);
             e.printStackTrace();
-            fetchBatch(conn, tableName, startRowKey, endRowKey,
+            fetchBatch(tableName, startRowKey, endRowKey,
                     includeStartRow, retryCount + 1);
         } catch (CosServiceException e) {
             e.printStackTrace();
-            fetchBatch(conn, tableName, startRowKey, endRowKey,
+            fetchBatch(tableName, startRowKey, endRowKey,
                     includeStartRow, retryCount + 1);
         } catch (CosClientException e) {
             e.printStackTrace();
-            fetchBatch(conn, tableName, startRowKey, endRowKey,
+            fetchBatch(tableName, startRowKey, endRowKey,
                     includeStartRow, retryCount + 1);
         }
 
         if (lastRow != null) {
-            return Bytes.toString(lastRow.getRow());
+            return lastRow.getKey().toString();
         }
         return null;
     }
