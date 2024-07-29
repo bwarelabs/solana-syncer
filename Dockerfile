@@ -9,6 +9,4 @@ COPY pom.xml pom.xml
 RUN mvn dependency:resolve
 
 COPY src src
-COPY config.properties config.properties
-COPY solana-tencent-test.json solana-tencent-test.json
 RUN mvn package
