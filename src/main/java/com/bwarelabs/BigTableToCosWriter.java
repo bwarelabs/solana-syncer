@@ -50,9 +50,9 @@ public class BigTableToCosWriter {
     private final String TX_BY_ADDR_LAST_KEY;
     private final String BLOCKS_LAST_KEY;
     private final String ENTRIES_LAST_KEY;
+    private final String SYNC_TYPE;
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final BigtableDataSettings settings;
-    private final String syncType = "adila";
     private final BigtableDataClient dataClient;
 
     private final char[] CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
@@ -68,6 +68,7 @@ public class BigTableToCosWriter {
         this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
         this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
+        this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
 
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
@@ -348,7 +349,7 @@ public class BigTableToCosWriter {
 
         CustomS3FSDataOutputStream customFSDataOutputStream = new CustomS3FSDataOutputStream(
                 Paths.get("output/sequencefile/" + tableName + "/range_" + startRowKey + "_" + endRowKey), tableName,
-                this.syncType);
+                SYNC_TYPE);
 
         return customFSDataOutputStream;
     }
