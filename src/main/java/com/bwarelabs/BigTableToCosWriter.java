@@ -57,6 +57,13 @@ public class BigTableToCosWriter {
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final BigtableDataSettings settings;
     private final BigtableDataClient dataClient;
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+
+    public void startLoggingForkJoinPoolStatus(ForkJoinPool pool) {
+        final Runnable loggerTask = () -> logForkJoinPoolStatus(pool);
+        scheduler.scheduleAtFixedRate(loggerTask, 0, 300, TimeUnit.SECONDS);
+    }
+
 
     private final char[] CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
 
@@ -70,6 +77,7 @@ public class BigTableToCosWriter {
         this.TX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-last-key");
         this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
         this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
+        this.BLOCKS_START_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-start-key");
         this.ENTRIES_START_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-start-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
         this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
@@ -95,6 +103,10 @@ public class BigTableToCosWriter {
     public void write(String tableName) throws Exception {
         logger.info("Starting BigTable to COS writer");
         loadCheckpoints(tableName);
+
+        for (Map.Entry<Integer, String> entry : checkpoints.entrySet()) {
+            logger.info("Thread: " + entry.getKey() + " Checkpoint: " + entry.getValue());
+        }
 
         if (tableName == null || tableName.trim().isEmpty()) {
             logger.severe("Table name cannot be null or empty");
@@ -131,11 +143,26 @@ public class BigTableToCosWriter {
         logger.info("BigTable to COS writer completed");
     }
 
+
+    private void logForkJoinPoolStatus(ForkJoinPool pool) {
+        logger.info("ForkJoinPool status:");
+        logger.info("Parallelism: " + pool.getParallelism());
+        logger.info("Pool size: " + pool.getPoolSize());
+        logger.info("Active thread count: " + pool.getActiveThreadCount());
+        logger.info("Running thread count: " + pool.getRunningThreadCount());
+        logger.info("Queued task count: " + pool.getQueuedTaskCount());
+        logger.info("Queued submission count: " + pool.getQueuedSubmissionCount());
+        logger.info("Steal count: " + pool.getStealCount());
+        logger.info("Is pool quiescent: " + pool.isQuiescent());
+        logger.info("--------------------------------");
+    }
+
+
     private void writeBlocksOrEntries(String table) throws Exception {
         logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
 
         String lastKey = table.equals("entries") ? this.ENTRIES_LAST_KEY : this.BLOCKS_LAST_KEY;
-        String startKey = table.equals("entries") ? this.ENTRIES_START_KEY : "0000000000000000";
+        String startKey = table.equals("entries") ? this.ENTRIES_START_KEY : this.BLOCKS_START_KEY;
 
         List<String[]> hexRanges = this
                 .splitHexRange(startKey, lastKey);
@@ -143,23 +170,34 @@ public class BigTableToCosWriter {
             throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
         }
 
+        logger.info("Thread count: " + this.THREAD_COUNT);
+
         List<ForkJoinTask> tasks = new ArrayList<>();
+
+        ForkJoinPool pool = ForkJoinPool.commonPool();
+        this.startLoggingForkJoinPoolStatus(pool);
+
         for (int i = 0; i < this.THREAD_COUNT; i++) {
             String[] hexRange = hexRanges.get(i);
             String startRow = checkpoints.getOrDefault(i, hexRange[0]);
             String endRow = hexRange[1];
 
             boolean isCheckpointStart = checkpoints.get(i) != null;
+            logger.info("isCheckpointStart: " + isCheckpointStart);
 
             logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
             tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart));
         }
 
+//        logForkJoinPoolStatus(pool);  // Log status after starting tasks
+
         for (ForkJoinTask task : tasks) {
             task.join();
+//            logForkJoinPoolStatus(pool);  // Log status after each task completes
         }
 
         logger.info(String.format("Table '%s' processed and uploaded.", table));
+//        logForkJoinPoolStatus(pool);  // Log final status
     }
 
     private void writeTx(String table) throws Exception {
@@ -193,6 +231,7 @@ public class BigTableToCosWriter {
             }
 
             boolean isCheckpointStart = checkpoints.get(i) != null;
+            logger.info("isCheckpointStart: " + isCheckpointStart);
             String endRow;
             if (i == this.THREAD_COUNT - 1) {
                 if (table.equals("tx")) {
@@ -265,11 +304,12 @@ public class BigTableToCosWriter {
                         0);
                 if (currentEndRow == null) {
                     // empty batch, we're done
+                    logger.info(String.format("[%] - empty batch for %s - %s", threadId, currentStartRow, currentEndRow));
                     return;
                 }
 
                 logger.info(
-                        String.format("Processed batch %s - %s", currentStartRow, currentEndRow));
+                        String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, currentEndRow));
                 updateCheckpoint(threadId, currentEndRow, tableName);
                 currentStartRow = currentEndRow;
                 includeStartRow = false;
@@ -309,15 +349,18 @@ public class BigTableToCosWriter {
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
             int rows = 0;
-            logger.info(String.format("After query fetch batch for %s - %s", startRowKey, endRowKey));
+//            logger.info(String.format("After query fetch batch for %s - %s", startRowKey, endRowKey));
             for (Row row : dataClient.readRows(query)) {
                 rows++;
                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
                 customWriter.append(rowKey, row);
+//                logger.info(String.format("Appending row %s", rowKey));
                 lastRow = row;
             }
             logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
         } catch (Exception e) {
+            logger.severe(String.format("Error processing range %s - %s in table %s, with error %s",
+                    startRowKey, endRowKey, tableName, e));
             e.printStackTrace();
         } finally {
             logger.info(String.format(" Closing sequence file writer for %s from %s to %s",
@@ -391,6 +434,7 @@ public class BigTableToCosWriter {
     private void loadCheckpoints(String tableName) {
         for (int i = 0; i < this.THREAD_COUNT; i++) {
             Path checkpointPath = Paths.get("checkpoints/" + tableName + "checkpoint_" + i + ".txt");
+            System.out.println("Path: " + checkpointPath);
             if (Files.exists(checkpointPath)) {
                 try {
                     String checkpoint = new String(Files.readAllBytes(checkpointPath));
