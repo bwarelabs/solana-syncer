@@ -4,8 +4,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
+import org.apache.hadoop.hbase.io.ByteArrayOutputStream;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.slf4j.LoggerFactory;
@@ -24,8 +26,7 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 
-import java.io.FileInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,13 +52,14 @@ public class BigTableToCosWriter {
     private final String TX_LAST_KEY;
     private final String TX_BY_ADDR_LAST_KEY;
     private final String BLOCKS_LAST_KEY;
+    private final String BLOCKS_START_KEY;
     private final String ENTRIES_START_KEY;
     private final String ENTRIES_LAST_KEY;
     private final String SYNC_TYPE;
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final BigtableDataSettings settings;
     private final BigtableDataClient dataClient;
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    // private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
     public void startLoggingForkJoinPoolStatus(ForkJoinPool pool) {
         final Runnable loggerTask = () -> logForkJoinPoolStatus(pool);
@@ -283,14 +285,14 @@ public class BigTableToCosWriter {
     }
 
     private ForkJoinTask runTaskOnWorkerThread(int threadId, String tableName, String startRowKey, String endRowKey,
-            boolean isCheckpointStart) {
+                                               boolean isCheckpointStart) {
         return ForkJoinPool.commonPool()
                 .submit(() -> splitRangeAndChainUploads(threadId, tableName, startRowKey, endRowKey,
                         !isCheckpointStart));
     }
 
     private void splitRangeAndChainUploads(int threadId, String tableName, String currentStartRow,
-            String endRowKey, boolean includeStartRow) {
+                                           String endRowKey, boolean includeStartRow) {
 
         if (currentStartRow.compareTo(endRowKey) >= 0) {
             return;
@@ -322,18 +324,17 @@ public class BigTableToCosWriter {
     }
 
     private String fetchBatch(String tableName, String startRowKey, String endRowKey,
-            boolean includeStartRow, int retryCount) throws IOException {
+                              boolean includeStartRow, int retryCount) throws IOException {
         if (retryCount > 1) {
             return null;
         }
 
         if (tableName.equals("blocks") || tableName.equals("entries")) {
-            BigInteger nonFormatedEndRowKey = new BigInteger(startRowKey, 16).add(BigInteger.valueOf(this.SUBRANGE_SIZE)).subtract(BigInteger.ONE);
-            endRowKey = this.formatHex(nonFormatedEndRowKey);
+            BigInteger nonFormattedEndRowKey = new BigInteger(startRowKey, 16).add(BigInteger.valueOf(this.SUBRANGE_SIZE)).subtract(BigInteger.ONE);
+            endRowKey = this.formatHex(nonFormattedEndRowKey);
         }
 
-        CustomS3FSDataOutputStream customFSDataOutputStream = getS3OutputStream(tableName, startRowKey,
-                endRowKey);
+        CustomS3FSDataOutputStream customFSDataOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
         Configuration hadoopConfig = new Configuration();
         hadoopConfig.setStrings(
                 "io.serializations",
@@ -349,12 +350,11 @@ public class BigTableToCosWriter {
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
             int rows = 0;
-//            logger.info(String.format("After query fetch batch for %s - %s", startRowKey, endRowKey));
+
             for (Row row : dataClient.readRows(query)) {
                 rows++;
                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
                 customWriter.append(rowKey, row);
-//                logger.info(String.format("Appending row %s", rowKey));
                 lastRow = row;
             }
             logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
@@ -363,7 +363,7 @@ public class BigTableToCosWriter {
                     startRowKey, endRowKey, tableName, e));
             e.printStackTrace();
         } finally {
-            logger.info(String.format(" Closing sequence file writer for %s from %s to %s",
+            logger.info(String.format("Closing sequence file writer for %s from %s to %s",
                     tableName, startRowKey, endRowKey));
             if (customWriter != null) {
                 customWriter.close();
@@ -372,21 +372,13 @@ public class BigTableToCosWriter {
         }
 
         try {
-            customFSDataOutputStream.getUploadFuture().waitForUploadResult();
-        } catch (InterruptedException e) {
-            logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
-                    startRowKey, endRowKey, tableName), e);
-            e.printStackTrace();
-            fetchBatch(tableName, startRowKey, endRowKey,
-                    includeStartRow, retryCount + 1);
+            customFSDataOutputStream.getUploadFuture().join();
         } catch (CosServiceException e) {
             e.printStackTrace();
-            fetchBatch(tableName, startRowKey, endRowKey,
-                    includeStartRow, retryCount + 1);
+            fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
         } catch (CosClientException e) {
             e.printStackTrace();
-            fetchBatch(tableName, startRowKey, endRowKey,
-                    includeStartRow, retryCount + 1);
+            fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
         }
 
         if (lastRow != null) {
@@ -396,7 +388,7 @@ public class BigTableToCosWriter {
     }
 
     private CustomS3FSDataOutputStream getS3OutputStream(String tableName, String startRowKey,
-            String endRowKey) throws IOException {
+                                                         String endRowKey) throws IOException {
         logger.info(String.format("Converting batch to sequence file format for %s from %s to %s",
                 tableName, startRowKey, endRowKey));
 
@@ -433,8 +425,7 @@ public class BigTableToCosWriter {
 
     private void loadCheckpoints(String tableName) {
         for (int i = 0; i < this.THREAD_COUNT; i++) {
-            Path checkpointPath = Paths.get("checkpoints/" + tableName + "checkpoint_" + i + ".txt");
-            System.out.println("Path: " + checkpointPath);
+            Path checkpointPath = Paths.get("/app/checkpoints/" + tableName + "/checkpoint_" + i + ".txt");
             if (Files.exists(checkpointPath)) {
                 try {
                     String checkpoint = new String(Files.readAllBytes(checkpointPath));

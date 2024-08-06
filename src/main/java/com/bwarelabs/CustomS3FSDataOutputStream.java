@@ -19,7 +19,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private final PipedOutputStream pipedOutputStream;
     private final PipedInputStream pipedInputStream;
     private final String s3Key;
-    private Upload uploadFuture;
+    private CompletableFuture uploadFuture;
 
     public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) throws IOException {
         this(new PipedOutputStream(), slotRangeDir, category, syncType);
@@ -59,7 +59,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
         pipedOutputStream.close();
     }
 
-    public Upload getUploadFuture() {
+    public CompletableFuture<Void> getUploadFuture() {
         return uploadFuture;
     }
 
