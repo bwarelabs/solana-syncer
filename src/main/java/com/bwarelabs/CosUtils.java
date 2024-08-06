@@ -23,12 +23,17 @@ import com.qcloud.cos.model.*;
 import com.qcloud.cos.internal.crypto.*;
 import com.qcloud.cos.region.Region;
 import com.qcloud.cos.http.HttpMethodName;
+import java.util.ArrayList;
+import java.util.List;
 import com.qcloud.cos.utils.DateUtils;
 import com.qcloud.cos.transfer.*;
 import com.qcloud.cos.model.lifecycle.*;
 import com.qcloud.cos.model.inventory.*;
 import com.qcloud.cos.model.inventory.InventoryFrequency;
+import org.apache.hadoop.hbase.io.ByteArrayOutputStream;
 
+import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.time.Duration;
@@ -48,6 +53,8 @@ public class CosUtils {
     private static final String REGION;
     private static final String AWS_ID_KEY;
     private static final String AWS_SECRET_KEY;
+    private static final int BUFFER_SIZE = 15 * 1024 * 1024; // 15MB
+    private static final ExecutorService uploadExecutorService = Executors.newFixedThreadPool(32);
 
     static TransferManager createTransferManager(COSClient cosClient) {
         // Set the thread pool size. We recommend you set the size of your thread pool
@@ -67,8 +74,8 @@ public class CosUtils {
         // Set the threshold and part size for multipart upload to 5 MB and 1 MB
         // respectively.
         TransferManagerConfiguration transferManagerConfiguration = new TransferManagerConfiguration();
-        transferManagerConfiguration.setMultipartUploadThreshold(5 * 1024 * 1024);
-        transferManagerConfiguration.setMinimumUploadPartSize(1 * 1024 * 1024);
+        // transferManagerConfiguration.setMultipartUploadThreshold(15 * 1024 * 1024);
+        // transferManagerConfiguration.setMinimumUploadPartSize(0 * 1024 * 1024);
         transferManager.setConfiguration(transferManagerConfiguration);
 
         return transferManager;
@@ -135,7 +142,7 @@ public class CosUtils {
      * AWS_SECRET_KEY)))
      * .forcePathStyle(COS_ENDPOINT.contains("http://localhost:9000"))
      * .build();
-     * 
+     *
      * private static final S3TransferManager transferManager =
      * S3TransferManager.builder()
      * .s3Client(s3AsyncClient)
@@ -153,13 +160,13 @@ public class CosUtils {
      * logger.severe("Input stream cannot be null");
      * throw new IllegalArgumentException("Input stream cannot be null");
      * }
-     * 
+     *
      * try {
      * PutObjectRequest putObjectRequest = PutObjectRequest.builder()
      * .bucket(BUCKET_NAME)
      * .key(key)
      * .build();
-     * 
+     *
      * // BlockingInputStreamAsyncRequestBody body =
      * // AsyncRequestBody.forBlockingInputStream(null); // 'null' indicates a
      * stream
@@ -167,22 +174,22 @@ public class CosUtils {
      * BlockingInputStreamAsyncRequestBody body =
      * BlockingInputStreamAsyncRequestBody.builder().contentLength(null)
      * .subscribeTimeout(Duration.ofSeconds(120)).build();
-     * 
+     *
      * UploadRequest uploadRequest = UploadRequest.builder()
      * .putObjectRequest(putObjectRequest)
      * .requestBody(body)
      * .addTransferListener(LoggingTransferListener.create())
      * .build();
-     * 
+     *
      * logger.info(String.format("Starting upload for: %s", key));
      * Upload upload = transferManager.upload(uploadRequest);
      * logger.info(String.format("Started upload for: %s", key));
-     * 
+     *
      * body.writeInputStream(inputStream);
      * logger.info(String.format("Wrote input stream for: %s", key));
-     * 
+     *
      * return upload.completionFuture();
-     * 
+     *
      * // CompletableFuture<Void> writeFuture = CompletableFuture.runAsync(() -> {
      * // try {
      * // body.writeInputStream(inputStream);
@@ -190,7 +197,7 @@ public class CosUtils {
      * // throw new RuntimeException("Failed to write input stream to body", e);
      * // }
      * // }, executorService);
-     * 
+     *
      * // return writeFuture.thenCompose(v -> upload.completionFuture())
      * // .exceptionally(ex -> {
      * // throw new RuntimeException("Upload to COS failed", ex);
@@ -203,25 +210,81 @@ public class CosUtils {
      * }
      */
 
-    public static Upload uploadToCos(String key, InputStream inputStream) {
-        ObjectMetadata objectMetadata = new ObjectMetadata();
+    public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(String key, InputStream inputStream) {
+        return CompletableFuture.supplyAsync(() -> {
+            ObjectMetadata objectMetadata = new ObjectMetadata();
+            InitiateMultipartUploadRequest initiateRequest = new InitiateMultipartUploadRequest(BUCKET_NAME, key, objectMetadata);
+            InitiateMultipartUploadResult initiateResult = cosClient.initiateMultipartUpload(initiateRequest);
+            String uploadId = initiateResult.getUploadId();
+            List<PartETag> partETags = new ArrayList<>();
 
-        PutObjectRequest putObjectRequest = new PutObjectRequest(BUCKET_NAME, key, inputStream, objectMetadata);
+            try (BufferedInputStream bufferedInputStream = new BufferedInputStream(inputStream);
+                 ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
 
-        Upload upload = null;
+                byte[] data = new byte[BUFFER_SIZE];
+                int bytesRead;
+                int partNumber = 1;
 
+                while ((bytesRead = bufferedInputStream.read(data, 0, BUFFER_SIZE)) != -1) {
+                    buffer.write(data, 0, bytesRead);
+                    if (buffer.size() >= BUFFER_SIZE) {
+                        // logger.info(String.format("partNumber: %d", partNumber));
+                        PartETag partETag = uploadPart(key, uploadId, partNumber++, buffer.toByteArray());
+                        partETags.add(partETag);
+                        buffer.reset();
+                    }
+                }
+
+                // logger.info(String.format("while loop completed. partNumber: %d", partNumber));
+
+                // if we get another part too small error, this is probably the issue!!!!
+                // can be fixed with 2 buffers, 1st one used to concatenate data from 2nd buffer at the end of the loop
+                if (buffer.size() > 0) {
+                    // logger.info(String.format("buffer size is greater than 0. partNumber: %d", partNumber));
+                    PartETag partETag = uploadPart(key, uploadId, partNumber++, buffer.toByteArray());
+                    partETags.add(partETag);
+                }
+
+                // for (PartETag partETag : partETags) {
+                //     logger.info(String.format("PartETag: %s", partETag.getETag()));
+                // }
+
+                CompleteMultipartUploadRequest completeRequest = new CompleteMultipartUploadRequest(BUCKET_NAME, key, uploadId, partETags);
+                return cosClient.completeMultipartUpload(completeRequest);
+
+            } catch (IOException e) {
+                logger.severe("Error reading from input stream: " + e.getMessage());
+                e.printStackTrace();
+                abortMultipartUpload(key, uploadId);
+                throw new RuntimeException("Error reading from input stream", e);
+            } catch (CosClientException e) {
+                logger.severe("COS Client Exception: " + e.getMessage());
+                e.printStackTrace();
+                abortMultipartUpload(key, uploadId);
+                throw e;
+            }
+        }, uploadExecutorService);
+    }
+
+    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data) {
+        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(data);
+        UploadPartRequest uploadPartRequest = new UploadPartRequest()
+                .withBucketName(BUCKET_NAME)
+                .withKey(key)
+                .withUploadId(uploadId)
+                .withPartNumber(partNumber)
+                .withInputStream(byteArrayInputStream)
+                .withPartSize(data.length);
+        UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
+        return uploadPartResult.getPartETag();
+    }
+
+    private static void abortMultipartUpload(String key, String uploadId) {
         try {
-            // The advanced API will return an async result `Upload`.
-            // You can synchronously call the `waitForUploadResult` method to wait for the
-            // upload to complete. If the upload is successful, `UploadResult` will be
-            // returned; otherwise, an exception will be reported.
-            upload = transferManager.upload(putObjectRequest);
-        } catch (CosServiceException e) {
-            e.printStackTrace();
-        } catch (CosClientException e) {
+            cosClient.abortMultipartUpload(new AbortMultipartUploadRequest(BUCKET_NAME, key, uploadId));
+        } catch (Exception e) {
+            logger.severe("Error aborting multipart upload: " + e.getMessage());
             e.printStackTrace();
         }
-
-        return upload;
     }
 }
