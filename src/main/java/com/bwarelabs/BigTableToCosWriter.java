@@ -306,7 +306,7 @@ public class BigTableToCosWriter {
                         0);
                 if (currentEndRow == null) {
                     // empty batch, we're done
-                    logger.info(String.format("[%] - empty batch for %s - %s", threadId, currentStartRow, currentEndRow));
+                    logger.info(String.format("[%s] - empty batch for %s - %s", threadId, currentStartRow, currentEndRow));
                     return;
                 }
 
