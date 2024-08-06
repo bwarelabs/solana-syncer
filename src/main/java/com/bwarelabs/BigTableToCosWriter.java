@@ -59,7 +59,7 @@ public class BigTableToCosWriter {
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final BigtableDataSettings settings;
     private final BigtableDataClient dataClient;
-    // private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
     public void startLoggingForkJoinPoolStatus(ForkJoinPool pool) {
         final Runnable loggerTask = () -> logForkJoinPoolStatus(pool);

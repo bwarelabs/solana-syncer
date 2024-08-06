@@ -55,6 +55,9 @@ public class CosUtils {
     private static final String AWS_SECRET_KEY;
     private static final int BUFFER_SIZE = 15 * 1024 * 1024; // 15MB
     private static final ExecutorService uploadExecutorService = Executors.newFixedThreadPool(32);
+    private static final int MAX_RETRIES = 2;
+    private static final int SOCKET_TIMEOUT;
+    private static final int CONNECTION_TIMEOUT;
 
     static TransferManager createTransferManager(COSClient cosClient) {
         // Set the thread pool size. We recommend you set the size of your thread pool
@@ -106,9 +109,9 @@ public class CosUtils {
         // The following settings are optional:
 
         // Set the read timeout period, which is 30s by default.
-        clientConfig.setSocketTimeout(30 * 1000);
+        clientConfig.setSocketTimeout(SOCKET_TIMEOUT * 1000);
         // Set the connection timeout period, which is 30s by default.
-        clientConfig.setConnectionTimeout(30 * 1000);
+        clientConfig.setConnectionTimeout(CONNECTION_TIMEOUT * 1000);
 
         // Generate a COS client.
         return new COSClient(cred, clientConfig);
@@ -128,6 +131,8 @@ public class CosUtils {
         REGION = Utils.getRequiredProperty(properties, "cos-utils.tencent.region");
         AWS_ID_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.id-key");
         AWS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
+        SOCKET_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.socket-timeout"));
+        CONNECTION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
     }
 
     public static final COSClient cosClient = createCOSClient();
@@ -262,11 +267,13 @@ public class CosUtils {
                 e.printStackTrace();
                 abortMultipartUpload(key, uploadId);
                 throw e;
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
         }, uploadExecutorService);
     }
 
-    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data) {
+    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data) throws InterruptedException {
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(data);
         UploadPartRequest uploadPartRequest = new UploadPartRequest()
                 .withBucketName(BUCKET_NAME)
@@ -275,8 +282,21 @@ public class CosUtils {
                 .withPartNumber(partNumber)
                 .withInputStream(byteArrayInputStream)
                 .withPartSize(data.length);
-        UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
-        return uploadPartResult.getPartETag();
+
+        int attempts = 0;
+        while (true) {
+            try {
+                UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
+                return uploadPartResult.getPartETag();
+            } catch (CosClientException e) {
+                attempts++;
+                if (attempts >= MAX_RETRIES) {
+                    throw e;
+                }
+                logger.warning("Error uploading part number " + partNumber + ": " + e.getMessage() + ". Retrying...");
+                Thread.sleep(2000); // Wait for 2 seconds before retrying
+            }
+        }
     }
 
     private static void abortMultipartUpload(String key, String uploadId) {
