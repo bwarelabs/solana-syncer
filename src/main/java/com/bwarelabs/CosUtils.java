@@ -287,14 +287,18 @@ public class CosUtils {
         while (true) {
             try {
                 UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
+                if (attempts > 0) {
+                    logger.info("Successfully uploaded part number " + partNumber + " after " + attempts + " attempts");
+                }
                 return uploadPartResult.getPartETag();
             } catch (CosClientException e) {
                 attempts++;
                 if (attempts >= MAX_RETRIES) {
                     throw e;
                 }
-                logger.warning("Error uploading part number " + partNumber + ": " + e.getMessage() + ". Retrying...");
-                Thread.sleep(2000); // Wait for 2 seconds before retrying
+                logger.warning("Error uploading part number " + partNumber + ": " + e + ". Retrying...");
+                e.printStackTrace();
+                Thread.sleep(2000); 
             }
         }
     }
