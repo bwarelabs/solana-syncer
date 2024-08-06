@@ -450,6 +450,9 @@ public class BigTableToCosWriter {
         BigInteger start = new BigInteger(startKey, 16);
         BigInteger end = new BigInteger(lastKey, 16);
 
+        start = start.divide(BigInteger.valueOf(this.SUBRANGE_SIZE))
+                .multiply(BigInteger.valueOf(this.SUBRANGE_SIZE));
+
         BigInteger totalRange = end.subtract(start).add(BigInteger.ONE);
         BigInteger intervalSize = totalRange.divide(BigInteger.valueOf(this.THREAD_COUNT));
         BigInteger remainder = totalRange.mod(BigInteger.valueOf(this.THREAD_COUNT));
@@ -469,11 +472,12 @@ public class BigTableToCosWriter {
             }
 
             currentEnd = currentEnd.divide(BigInteger.valueOf(this.SUBRANGE_SIZE))
-                    .multiply(BigInteger.valueOf(this.SUBRANGE_SIZE)).add(BigInteger.valueOf(this.SUBRANGE_SIZE - 1));
+                    .multiply(BigInteger.valueOf(this.SUBRANGE_SIZE))
+                    .add(BigInteger.valueOf(this.SUBRANGE_SIZE - 1));
 
             intervals.add(new String[] {
-                    this.formatHex(currentStart),
-                    this.formatHex(currentEnd)
+                    formatHex(currentStart),
+                    formatHex(currentEnd)
             });
             currentStart = currentEnd.add(BigInteger.ONE);
         }
