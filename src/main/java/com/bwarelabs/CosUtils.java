@@ -255,9 +255,10 @@ public class CosUtils {
                             try {
                                 PartETag partETag = uploadPart(key, uploadId, currentPartNumber, uploadData, uploadData.length, false);
                                 partETags.add(partETag);
-                                semaphore.release();
                             } catch (InterruptedException e) {
                                 throw new RuntimeException(e);
+                            } finally {
+                                semaphore.release();
                             }
                         }));
                         offset = 0;
