@@ -348,13 +348,14 @@ public class BigTableToCosWriter {
 
             int rows = 0;
             for (Row row: dataClient.readRows(query)) {
+                rows++;
                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
                 customWriter.append(rowKey, row);
                 lastRow = row;
-                rows++;
             }
+            customWriter.close();
 
-            logger.info(String.format("After %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
+            logger.info(String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             try {
                 outputStream.getUploadFuture().join();
