@@ -241,7 +241,7 @@ public class CosUtils {
                 byte[] data = new byte[2 * BUFFER_SIZE];
                 int bytesRead;
                 int partNumber = 1;
-                final Semaphore semaphore = new Semaphore(16);
+                final Semaphore semaphore = new Semaphore(8);
 
                 int offset = 0;
                 while ((bytesRead = inputStream.read(data, offset, BUFFER_SIZE)) != -1) {
