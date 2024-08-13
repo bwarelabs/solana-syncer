@@ -346,14 +346,19 @@ public class BigTableToCosWriter {
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
 
+            int rows = 0;
             for (Row row: dataClient.readRows(query)) {
                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
                 customWriter.append(rowKey, row);
                 lastRow = row;
+                rows++;
             }
+
+            logger.info(String.format("After %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             try {
                 outputStream.getUploadFuture().join();
+                logger.info(String.format("Finished upload for fetch batch for %s - %s", rows, startRowKey, endRowKey));
             } catch (CosServiceException e) {
                 e.printStackTrace();
                 return fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
