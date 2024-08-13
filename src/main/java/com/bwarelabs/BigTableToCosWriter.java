@@ -16,6 +16,7 @@ import com.qcloud.cos.exception.*;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.api.gax.rpc.ServerStream;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
@@ -58,6 +59,7 @@ public class BigTableToCosWriter {
     private final String SYNC_TYPE;
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final BigtableDataSettings settings;
+    private final BigtableDataClient dataClient;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private final ExecutorService executorService;
 
@@ -99,6 +101,7 @@ public class BigTableToCosWriter {
                 .stubSettings();
 
         settings = settingsBuilder.build();
+        dataClient = BigtableDataClient.create(settings);
 
         executorService = Executors.newFixedThreadPool(this.THREAD_COUNT);
     }
@@ -151,6 +154,7 @@ public class BigTableToCosWriter {
 
         logger.info(String.format("Table '%s' processed and uploaded.", tableName));
 
+        dataClient.close();
         logger.info("BigTable to COS writer completed");
     }
 
@@ -262,7 +266,7 @@ public class BigTableToCosWriter {
             throw new IllegalArgumentException("Invalid table name: " + tableName + ". Must be 'tx' or 'tx-by-addr'");
         }
 
-        try (BigtableDataClient dataClient = BigtableDataClient.create(settings)) {
+        try {
             int prefixValue = prefix.charAt(0);
             int maxPrefixValue = maxPrefix.charAt(0);
             for (int i = prefixValue; i <= maxPrefixValue; i++) {
@@ -336,7 +340,7 @@ public class BigTableToCosWriter {
 
         CustomSequenceFileWriter customWriter = null;
         Row lastRow = null;
-        try (BigtableDataClient dataClient = BigtableDataClient.create(settings)) {
+        try {
             customWriter = new CustomSequenceFileWriter(hadoopConfig, customFSDataOutputStream);
 
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
@@ -344,11 +348,19 @@ public class BigTableToCosWriter {
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
             int rows = 0;
 
-            for (Row row : dataClient.readRows(query)) {
-                rows++;
-                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
-                customWriter.append(rowKey, row);
-                lastRow = row;
+            ServerStream<Row> stream = null;
+            try { 
+                stream = dataClient.readRowsCallable().call(query);
+                for (Row row : stream) {
+                    rows++;
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                    customWriter.append(rowKey, row);
+                    lastRow = row;
+                }
+            } finally {
+                if (stream != null) {
+                    stream.cancel();
+                }
             }
             
             logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
