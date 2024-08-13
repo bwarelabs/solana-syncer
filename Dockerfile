@@ -10,3 +10,7 @@ RUN mvn dependency:resolve
 
 COPY src src
 RUN mvn package
+
+COPY start.sh start.sh
+
+ENTRYPOINT ["/app/start.sh"]
