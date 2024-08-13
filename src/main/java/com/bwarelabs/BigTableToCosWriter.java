@@ -17,6 +17,8 @@ import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.rpc.ServerStream;
+import com.google.api.gax.rpc.ResponseObserver;
+import com.google.api.gax.rpc.StreamController;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
@@ -331,62 +333,69 @@ public class BigTableToCosWriter {
             endRowKey = this.formatHex(nonFormattedEndRowKey);
         }
 
-        CustomS3FSDataOutputStream customFSDataOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
         Configuration hadoopConfig = new Configuration();
         hadoopConfig.setStrings(
                 "io.serializations",
                 ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
-        CustomSequenceFileWriter customWriter = null;
-        Row lastRow = null;
-        try {
-            customWriter = new CustomSequenceFileWriter(hadoopConfig, customFSDataOutputStream);
-
+        CompletableFuture<Row> lastRowFuture = new CompletableFuture<>();
+        try (CustomS3FSDataOutputStream outputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
+             CustomSequenceFileWriter customWriter = new CustomSequenceFileWriter(hadoopConfig, outputStream)) {
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
-            int rows = 0;
 
-            ServerStream<Row> stream = null;
-            try { 
-                stream = dataClient.readRowsCallable().call(query);
-                for (Row row : stream) {
+            dataClient.readRowsAsync(query, new ResponseObserver<Row>() {
+                int rows = 0;
+                StreamController controller;
+                Row lastRow = null;
+
+                @Override
+                public void onStart(StreamController controller) {
+                    this.controller = controller;
+                }
+
+                @Override
+                public void onResponse(Row response) {
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(response.getKey().toByteArray());
+                    try {
+                        customWriter.append(rowKey, response);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        controller.cancel();
+                    }
                     rows++;
-                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
-                    customWriter.append(rowKey, row);
-                    lastRow = row;
+                    lastRow = response;
                 }
-            } finally {
-                if (stream != null) {
-                    stream.cancel();
+
+                @Override
+                public void onError(Throwable t) {
+                    logger.severe(String.format("Error processing range %s in table %s, with error %s",
+                            startRowKey, tableName, t));
+                    t.printStackTrace();
+                    lastRowFuture.complete(lastRow);
                 }
+
+                @Override
+                public void onComplete() {
+                    logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey));
+                    lastRowFuture.complete(lastRow);
+                }
+            });
+
+            try {
+                outputStream.getUploadFuture().join();
+            } catch (CosServiceException e) {
+                e.printStackTrace();
+                return fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
+            } catch (CosClientException e) {
+                e.printStackTrace();
+                return fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
             }
-            
-            logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
-        } catch (Exception e) {
-            logger.severe(String.format("Error processing range %s - %s in table %s, with error %s",
-                    startRowKey, endRowKey, tableName, e));
-            e.printStackTrace();
-        } finally {
-            logger.info(String.format("Closing sequence file writer for %s from %s to %s",
-                    tableName, startRowKey, endRowKey));
-            if (customWriter != null) {
-                customWriter.close();
-            }
-            customFSDataOutputStream.close();
         }
 
-        try {
-            customFSDataOutputStream.getUploadFuture().join();
-        } catch (CosServiceException e) {
-            e.printStackTrace();
-            fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
-        } catch (CosClientException e) {
-            e.printStackTrace();
-            fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
-        }
-
+        Row lastRow = lastRowFuture.join();
         if (lastRow != null) {
             return lastRow.getKey().toStringUtf8();
         }
