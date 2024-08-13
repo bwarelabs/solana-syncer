@@ -339,50 +339,18 @@ public class BigTableToCosWriter {
                 ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
-        CompletableFuture<Row> lastRowFuture = new CompletableFuture<>();
+        Row lastRow = null;
         try (CustomS3FSDataOutputStream outputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
              CustomSequenceFileWriter customWriter = new CustomSequenceFileWriter(hadoopConfig, outputStream)) {
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
 
-            dataClient.readRowsAsync(query, new ResponseObserver<Row>() {
-                int rows = 0;
-                StreamController controller;
-                Row lastRow = null;
-
-                @Override
-                public void onStart(StreamController controller) {
-                    this.controller = controller;
-                }
-
-                @Override
-                public void onResponse(Row response) {
-                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(response.getKey().toByteArray());
-                    try {
-                        customWriter.append(rowKey, response);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        controller.cancel();
-                    }
-                    rows++;
-                    lastRow = response;
-                }
-
-                @Override
-                public void onError(Throwable t) {
-                    logger.severe(String.format("Error processing range %s in table %s, with error %s",
-                            startRowKey, tableName, t));
-                    t.printStackTrace();
-                    lastRowFuture.complete(lastRow);
-                }
-
-                @Override
-                public void onComplete() {
-                    logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey));
-                    lastRowFuture.complete(lastRow);
-                }
-            });
+            for (Row row: dataClient.readRows(query)) {
+                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                customWriter.append(rowKey, row);
+                lastRow = row;
+            }
 
             try {
                 outputStream.getUploadFuture().join();
@@ -395,7 +363,6 @@ public class BigTableToCosWriter {
             }
         }
 
-        Row lastRow = lastRowFuture.join();
         if (lastRow != null) {
             return lastRow.getKey().toStringUtf8();
         }

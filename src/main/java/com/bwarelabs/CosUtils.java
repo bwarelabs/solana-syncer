@@ -57,7 +57,7 @@ public class CosUtils {
     private static final String AWS_ID_KEY;
     private static final String AWS_SECRET_KEY;
     private static final int BUFFER_SIZE = 15 * 1024 * 1024; // 15MB
-    
+
     private static final int MAX_RETRIES = 2;
     private static final int SOCKET_TIMEOUT;
     private static final int CONNECTION_TIMEOUT;
@@ -136,12 +136,13 @@ public class CosUtils {
         AWS_ID_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.id-key");
         AWS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
         SOCKET_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.socket-timeout"));
-        CONNECTION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
-        THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));    
+        CONNECTION_TIMEOUT = Integer
+                .parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
+        THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
         System.setProperty(SkipMd5CheckStrategy.DISABLE_PUT_OBJECT_MD5_VALIDATION_PROPERTY, "true");
     }
 
-    static ExecutorService createUploadExecutorService() {         
+    static ExecutorService createUploadExecutorService() {
         return Executors.newFixedThreadPool(THREAD_COUNT);
     }
 
@@ -226,10 +227,12 @@ public class CosUtils {
      * }
      */
 
-    public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(final String key, InputStream inputStream) {
+    public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(final String key,
+            InputStream inputStream) {
         return CompletableFuture.supplyAsync(() -> {
             ObjectMetadata objectMetadata = new ObjectMetadata();
-            InitiateMultipartUploadRequest initiateRequest = new InitiateMultipartUploadRequest(BUCKET_NAME, key, objectMetadata);
+            InitiateMultipartUploadRequest initiateRequest = new InitiateMultipartUploadRequest(BUCKET_NAME, key,
+                    objectMetadata);
             InitiateMultipartUploadResult initiateResult = cosClient.initiateMultipartUpload(initiateRequest);
             final String uploadId = initiateResult.getUploadId();
             List<PartETag> partETags = new ArrayList<>();
@@ -241,26 +244,14 @@ public class CosUtils {
                 byte[] data = new byte[2 * BUFFER_SIZE];
                 int bytesRead;
                 int partNumber = 1;
-                final Semaphore semaphore = new Semaphore(8);
 
                 int offset = 0;
                 while ((bytesRead = inputStream.read(data, offset, BUFFER_SIZE)) != -1) {
-                    assert(bytesRead > 0);
+                    assert (bytesRead > 0);
                     offset += bytesRead;
                     if (offset >= BUFFER_SIZE) {
-                        final int currentPartNumber = partNumber++;
-                        final byte[] uploadData = Arrays.copyOf(data, offset);
-                        semaphore.acquire();
-                        threads.add(Thread.ofVirtual().start(() -> {
-                            try {
-                                PartETag partETag = uploadPart(key, uploadId, currentPartNumber, uploadData, uploadData.length, false);
-                                partETags.add(partETag);
-                            } catch (InterruptedException e) {
-                                throw new RuntimeException(e);
-                            } finally {
-                                semaphore.release();
-                            }
-                        }));
+                        PartETag partETag = uploadPart(key, uploadId, partNumber++, data, offset, false);
+                        partETags.add(partETag);
                         offset = 0;
                     }
                 }
@@ -268,22 +259,21 @@ public class CosUtils {
                 logger.info(String.format("while loop completed. partNumber: %d", partNumber));
 
                 // if we get another part too small error, this is probably the issue!!!!
-                // can be fixed with 2 buffers, 1st one used to concatenate data from 2nd buffer at the end of the loop
+                // can be fixed with 2 buffers, 1st one used to concatenate data from 2nd buffer
+                // at the end of the loop
                 if (offset > 0) {
-                    // logger.info(String.format("buffer size is greater than 0. partNumber: %d", partNumber));
+                    // logger.info(String.format("buffer size is greater than 0. partNumber: %d",
+                    // partNumber));
                     PartETag partETag = uploadPart(key, uploadId, partNumber++, data, offset, true);
                     partETags.add(partETag);
                 }
 
-                for (Thread thread : threads) {
-                    thread.join();
-                }
-
                 // for (PartETag partETag : partETags) {
-                //     logger.info(String.format("PartETag: %s", partETag.getETag()));
+                // logger.info(String.format("PartETag: %s", partETag.getETag()));
                 // }
 
-                CompleteMultipartUploadRequest completeRequest = new CompleteMultipartUploadRequest(BUCKET_NAME, key, uploadId, partETags);
+                CompleteMultipartUploadRequest completeRequest = new CompleteMultipartUploadRequest(BUCKET_NAME, key,
+                        uploadId, partETags);
                 return cosClient.completeMultipartUpload(completeRequest);
 
             } catch (IOException e) {
@@ -302,7 +292,8 @@ public class CosUtils {
         }, uploadExecutorService);
     }
 
-    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data, int size, boolean isLastPart) throws InterruptedException {
+    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data, int size,
+            boolean isLastPart) throws InterruptedException {
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(data, 0, size);
         UploadPartRequest uploadPartRequest = new UploadPartRequest()
                 .withBucketName(BUCKET_NAME)
@@ -328,7 +319,7 @@ public class CosUtils {
                 }
                 logger.warning("Error uploading part number " + partNumber + ": " + e + ". Retrying...");
                 e.printStackTrace();
-                Thread.sleep(2000); 
+                Thread.sleep(2000);
             }
         }
     }
