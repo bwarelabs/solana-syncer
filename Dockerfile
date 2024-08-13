@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17
+FROM eclipse-temurin:22
 
 RUN apt-get update
 RUN apt-get install -y maven vim

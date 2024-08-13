@@ -29,7 +29,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, Path slotRangeDir, String category, String syncType) throws IOException {
         super(pipedOutputStream, null);
         this.pipedOutputStream = pipedOutputStream;
-        this.pipedInputStream = new PipedInputStream(pipedOutputStream);
+        this.pipedInputStream = new PipedInputStream(pipedOutputStream, 200 * 1024 * 1024);
         this.s3Key = syncType + "/" + category + "/" + slotRangeDir.getFileName() + "/" + category + ".seq";
         initiateUpload();
     }

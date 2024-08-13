@@ -20,11 +20,13 @@ import com.qcloud.cos.ClientConfig;
 import com.qcloud.cos.auth.*;
 import com.qcloud.cos.exception.*;
 import com.qcloud.cos.model.*;
+import com.qcloud.cos.internal.SkipMd5CheckStrategy;
 import com.qcloud.cos.internal.crypto.*;
 import com.qcloud.cos.region.Region;
 import com.qcloud.cos.http.HttpMethodName;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
 import com.qcloud.cos.utils.DateUtils;
 import com.qcloud.cos.transfer.*;
 import com.qcloud.cos.model.lifecycle.*;
@@ -54,10 +56,11 @@ public class CosUtils {
     private static final String AWS_ID_KEY;
     private static final String AWS_SECRET_KEY;
     private static final int BUFFER_SIZE = 15 * 1024 * 1024; // 15MB
-    private static final ExecutorService uploadExecutorService = Executors.newFixedThreadPool(32);
+    
     private static final int MAX_RETRIES = 2;
     private static final int SOCKET_TIMEOUT;
     private static final int CONNECTION_TIMEOUT;
+    private static final int THREAD_COUNT;
 
     static TransferManager createTransferManager(COSClient cosClient) {
         // Set the thread pool size. We recommend you set the size of your thread pool
@@ -133,10 +136,17 @@ public class CosUtils {
         AWS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
         SOCKET_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.socket-timeout"));
         CONNECTION_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
+        THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));    
+        System.setProperty(SkipMd5CheckStrategy.DISABLE_PUT_OBJECT_MD5_VALIDATION_PROPERTY, "true");
+    }
+
+    static ExecutorService createUploadExecutorService() {         
+        return Executors.newFixedThreadPool(THREAD_COUNT);
     }
 
     public static final COSClient cosClient = createCOSClient();
     public static final TransferManager transferManager = createTransferManager(cosClient);
+    private static final ExecutorService uploadExecutorService = createUploadExecutorService();
 
     /*
      * private static final S3AsyncClient s3AsyncClient = S3AsyncClient.crtBuilder()
@@ -215,39 +225,55 @@ public class CosUtils {
      * }
      */
 
-    public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(String key, InputStream inputStream) {
+    public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(final String key, InputStream inputStream) {
         return CompletableFuture.supplyAsync(() -> {
             ObjectMetadata objectMetadata = new ObjectMetadata();
             InitiateMultipartUploadRequest initiateRequest = new InitiateMultipartUploadRequest(BUCKET_NAME, key, objectMetadata);
             InitiateMultipartUploadResult initiateResult = cosClient.initiateMultipartUpload(initiateRequest);
-            String uploadId = initiateResult.getUploadId();
+            final String uploadId = initiateResult.getUploadId();
             List<PartETag> partETags = new ArrayList<>();
 
-            try (BufferedInputStream bufferedInputStream = new BufferedInputStream(inputStream);
-                 ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
+            List<Thread> threads = new ArrayList<>();
 
-                byte[] data = new byte[BUFFER_SIZE];
+            try {
+
+                byte[] data = new byte[2 * BUFFER_SIZE];
                 int bytesRead;
                 int partNumber = 1;
 
-                while ((bytesRead = bufferedInputStream.read(data, 0, BUFFER_SIZE)) != -1) {
-                    buffer.write(data, 0, bytesRead);
-                    if (buffer.size() >= BUFFER_SIZE) {
-                        // logger.info(String.format("partNumber: %d", partNumber));
-                        PartETag partETag = uploadPart(key, uploadId, partNumber++, buffer.toByteArray());
-                        partETags.add(partETag);
-                        buffer.reset();
+                int offset = 0;
+                while ((bytesRead = inputStream.read(data, offset, BUFFER_SIZE)) != -1) {
+                    assert(bytesRead > 0);
+                    offset += bytesRead;
+                    if (offset >= BUFFER_SIZE) {
+                        logger.info(String.format("partNumber: %d size: %d", partNumber, offset));
+                        final int currentPartNumber = partNumber++;
+                        final byte[] uploadData = Arrays.copyOf(data, offset);
+                        threads.add(Thread.ofVirtual().start(() -> {
+                            try {
+                                PartETag partETag = uploadPart(key, uploadId, currentPartNumber, uploadData, uploadData.length, false);
+                                partETags.add(partETag);
+                                logger.info(String.format("done partNumber: %d", currentPartNumber));
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }));
+                        offset = 0;
                     }
                 }
 
-                // logger.info(String.format("while loop completed. partNumber: %d", partNumber));
+                logger.info(String.format("while loop completed. partNumber: %d", partNumber));
 
                 // if we get another part too small error, this is probably the issue!!!!
                 // can be fixed with 2 buffers, 1st one used to concatenate data from 2nd buffer at the end of the loop
-                if (buffer.size() > 0) {
+                if (offset > 0) {
                     // logger.info(String.format("buffer size is greater than 0. partNumber: %d", partNumber));
-                    PartETag partETag = uploadPart(key, uploadId, partNumber++, buffer.toByteArray());
+                    PartETag partETag = uploadPart(key, uploadId, partNumber++, data, offset, true);
                     partETags.add(partETag);
+                }
+
+                for (Thread thread : threads) {
+                    thread.join();
                 }
 
                 // for (PartETag partETag : partETags) {
@@ -273,15 +299,16 @@ public class CosUtils {
         }, uploadExecutorService);
     }
 
-    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data) throws InterruptedException {
-        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(data);
+    private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data, int size, boolean isLastPart) throws InterruptedException {
+        ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(data, 0, size);
         UploadPartRequest uploadPartRequest = new UploadPartRequest()
                 .withBucketName(BUCKET_NAME)
                 .withKey(key)
                 .withUploadId(uploadId)
                 .withPartNumber(partNumber)
                 .withInputStream(byteArrayInputStream)
-                .withPartSize(data.length);
+                .withPartSize(size)
+                .withLastPart(isLastPart);
 
         int attempts = 0;
         while (true) {
