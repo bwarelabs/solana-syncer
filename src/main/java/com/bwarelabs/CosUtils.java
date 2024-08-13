@@ -43,6 +43,7 @@ import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.logging.Logger;
 import java.io.IOException;
 import java.io.FileInputStream;
@@ -240,6 +241,7 @@ public class CosUtils {
                 byte[] data = new byte[2 * BUFFER_SIZE];
                 int bytesRead;
                 int partNumber = 1;
+                final Semaphore semaphore = new Semaphore(16);
 
                 int offset = 0;
                 while ((bytesRead = inputStream.read(data, offset, BUFFER_SIZE)) != -1) {
@@ -248,10 +250,12 @@ public class CosUtils {
                     if (offset >= BUFFER_SIZE) {
                         final int currentPartNumber = partNumber++;
                         final byte[] uploadData = Arrays.copyOf(data, offset);
+                        semaphore.acquire();
                         threads.add(Thread.ofVirtual().start(() -> {
                             try {
                                 PartETag partETag = uploadPart(key, uploadId, currentPartNumber, uploadData, uploadData.length, false);
                                 partETags.add(partETag);
+                                semaphore.release();
                             } catch (InterruptedException e) {
                                 throw new RuntimeException(e);
                             }
