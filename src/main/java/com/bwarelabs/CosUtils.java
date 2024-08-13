@@ -246,14 +246,12 @@ public class CosUtils {
                     assert(bytesRead > 0);
                     offset += bytesRead;
                     if (offset >= BUFFER_SIZE) {
-                        logger.info(String.format("partNumber: %d size: %d", partNumber, offset));
                         final int currentPartNumber = partNumber++;
                         final byte[] uploadData = Arrays.copyOf(data, offset);
                         threads.add(Thread.ofVirtual().start(() -> {
                             try {
                                 PartETag partETag = uploadPart(key, uploadId, currentPartNumber, uploadData, uploadData.length, false);
                                 partETags.add(partETag);
-                                logger.info(String.format("done partNumber: %d", currentPartNumber));
                             } catch (InterruptedException e) {
                                 throw new RuntimeException(e);
                             }

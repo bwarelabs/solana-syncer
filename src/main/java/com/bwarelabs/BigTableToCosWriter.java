@@ -349,10 +349,8 @@ public class BigTableToCosWriter {
 
             for (Row row : dataClient.readRows(query)) {
                 rows++;
-                logger.info(String.format("After %d rows read batch for %s - %s", rows, startRowKey, endRowKey));
                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
                 customWriter.append(rowKey, row);
-                logger.info(String.format("After %d rows write batch for %s - %s", rows, startRowKey, endRowKey));
                 lastRow = row;
             }
             logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
