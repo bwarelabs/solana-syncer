@@ -58,7 +58,6 @@ public class BigTableToCosWriter {
     private final String SYNC_TYPE;
     private final Map<Integer, String> checkpoints = new HashMap<>();
     private final BigtableDataSettings settings;
-    private final BigtableDataClient dataClient;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private final ExecutorService executorService;
 
@@ -100,7 +99,6 @@ public class BigTableToCosWriter {
                 .stubSettings();
 
         settings = settingsBuilder.build();
-        dataClient = BigtableDataClient.create(settings);
 
         executorService = Executors.newFixedThreadPool(this.THREAD_COUNT);
     }
@@ -153,7 +151,6 @@ public class BigTableToCosWriter {
 
         logger.info(String.format("Table '%s' processed and uploaded.", tableName));
 
-        dataClient.close();
         logger.info("BigTable to COS writer completed");
     }
 
@@ -265,7 +262,7 @@ public class BigTableToCosWriter {
             throw new IllegalArgumentException("Invalid table name: " + tableName + ". Must be 'tx' or 'tx-by-addr'");
         }
 
-        try {
+        try (BigtableDataClient dataClient = BigtableDataClient.create(settings)) {
             int prefixValue = prefix.charAt(0);
             int maxPrefixValue = maxPrefix.charAt(0);
             for (int i = prefixValue; i <= maxPrefixValue; i++) {
@@ -339,7 +336,7 @@ public class BigTableToCosWriter {
 
         CustomSequenceFileWriter customWriter = null;
         Row lastRow = null;
-        try {
+        try (BigtableDataClient dataClient = BigtableDataClient.create(settings)) {
             customWriter = new CustomSequenceFileWriter(hadoopConfig, customFSDataOutputStream);
 
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
@@ -353,6 +350,7 @@ public class BigTableToCosWriter {
                 customWriter.append(rowKey, row);
                 lastRow = row;
             }
+            
             logger.info(String.format("After %d rows fetch batch for %s - %s", rows, startRowKey, endRowKey));
         } catch (Exception e) {
             logger.severe(String.format("Error processing range %s - %s in table %s, with error %s",
