@@ -1,57 +1,33 @@
 package com.bwarelabs;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.RawLocalFileSystem;
-import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.*;
-import org.apache.hadoop.hbase.io.ByteArrayOutputStream;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.util.Bytes;
-import org.apache.hadoop.hbase.util.Pair;
-import org.apache.hadoop.io.compress.bzip2.Bzip2Decompressor;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.slf4j.LoggerFactory;
 import com.qcloud.cos.exception.*;
 
-import io.grpc.Codec.Gzip;
-
-import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
-import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
-import com.google.api.gax.rpc.ServerStream;
-import com.google.api.gax.rpc.ResponseObserver;
-import com.google.api.gax.rpc.StreamController;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
-import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
-import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import solana.storage.ConfirmedBlock.*;
 import solana.storage.ConfirmedBlock.ConfirmedBlockOuterClass.ConfirmedBlock;
 
 import java.io.*;
 import java.math.BigInteger;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.logging.Level;
-import com.github.luben.zstd.ZstdBufferDecompressingStream;
-import com.github.luben.zstd.ZstdIOException;
+
 import com.github.luben.zstd.ZstdInputStream;
 
-import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 
@@ -61,15 +37,13 @@ public class BigTableToCosWriter {
 
     private final int THREAD_COUNT;
     private final int SUBRANGE_SIZE;
-    private final int BATCH_LIMIT;
-    private final String TX_LAST_KEY;
-    private final String TX_BY_ADDR_LAST_KEY;
     private final String BLOCKS_LAST_KEY;
     private final String BLOCKS_START_KEY;
     private final String ENTRIES_START_KEY;
     private final String ENTRIES_LAST_KEY;
     private final String SYNC_TYPE;
-    private final Map<Integer, String> checkpoints = new HashMap<>();
+    private final String MACHINE_IDENTIFIER;
+    private final List<String> uploadedRanges = new ArrayList<>();
     private final BigtableDataSettings settings;
     private final BigtableDataClient dataClient;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
@@ -89,14 +63,12 @@ public class BigTableToCosWriter {
 
         this.THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
         this.SUBRANGE_SIZE = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.subrange-size"));
-        this.BATCH_LIMIT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.batch-limit"));
-        this.TX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-last-key");
-        this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
         this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
         this.BLOCKS_START_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-start-key");
         this.ENTRIES_START_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-start-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
         this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
+        this.MACHINE_IDENTIFIER = Utils.getRequiredProperty(properties, "machine-identifier");
 
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
@@ -120,10 +92,10 @@ public class BigTableToCosWriter {
 
     public void write(String tableName) throws Exception {
         logger.info("Starting BigTable to COS writer");
-        loadCheckpoints(tableName);
+        loadUploadedRanges(tableName);
 
-        for (Map.Entry<Integer, String> entry : checkpoints.entrySet()) {
-            logger.info("Thread: " + entry.getKey() + " Checkpoint: " + entry.getValue());
+        for (String range: uploadedRanges) {
+            logger.info("Already uploaded range: " + range);
         }
 
         if (tableName == null || tableName.trim().isEmpty()) {
@@ -131,32 +103,12 @@ public class BigTableToCosWriter {
             return;
         }
 
-        // ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-        // ThreadPoolExecutor threadPoolExecutor = (ThreadPoolExecutor)
-        // this.executorService;
-        //
-        // Runnable printStats = () -> {
-        // System.out.println("======== Executor State ========");
-        // System.out.println("Pool Size: " + threadPoolExecutor.getPoolSize());
-        // System.out.println("Active Threads: " + threadPoolExecutor.getActiveCount());
-        // System.out.println("Completed Tasks: " +
-        // threadPoolExecutor.getCompletedTaskCount());
-        // System.out.println("Total Tasks: " + threadPoolExecutor.getTaskCount());
-        // System.out.println("Tasks in Queue: " +
-        // threadPoolExecutor.getQueue().size());
-        // System.out.println("================================");
-        // };
-        //
-        // scheduler.scheduleAtFixedRate(printStats, 0, 1, TimeUnit.SECONDS);
-
         List<Future<?>> tasks;
         if (tableName.equals("blocks") || tableName.equals("entries")) {
             tasks = writeBlocksOrEntries(tableName);
-        } else if (tableName.equals("tx") || tableName.equals("tx-by-addr")) {
-            tasks = writeTx(tableName);
         } else {
             logger.severe("Invalid table name: " + tableName);
-            tasks = new ArrayList<Future<?>>();
+            tasks = new ArrayList<>();
         }
 
         for (Future<?> task: tasks) {
@@ -193,115 +145,33 @@ public class BigTableToCosWriter {
 
         List<String[]> hexRanges = this
                 .splitHexRange(startKey, lastKey);
-        if (hexRanges.size() != this.THREAD_COUNT) {
-            throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
-        }
 
         logger.info("Thread count: " + this.THREAD_COUNT);
 
         List<Future<?>> tasks = new ArrayList<>();
 
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            String[] hexRange = hexRanges.get(i);
-            String startRow = checkpoints.getOrDefault(i, hexRange[0]);
+        for (String[] hexRange : hexRanges) {
+            String startRow = hexRange[0];
             String endRow = hexRange[1];
 
-            boolean isCheckpointStart = checkpoints.get(i) != null;
-            logger.info("isCheckpointStart: " + isCheckpointStart);
-
-            logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
-            tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart));
-        }    
-
-        return tasks;
-    }
-
-    private List<Future<?>> writeTx(String table) throws Exception {
-        logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
-
-        List<String[]> txRanges = this.splitRangeTx();
-        if (txRanges.size() != this.THREAD_COUNT) {
-            throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
-        }
-
-        List<String> startingKeysForTx = new ArrayList<>();
-        List<Future<?>> tasks = new ArrayList<>();
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            String[] txRange = txRanges.get(i);
-            String txStartKey = getThreadStartingKeyForTx(table, txRange[0], txRange[1]);
-            startingKeysForTx.add(txStartKey);
-            logger.info(String.format("Range: %s - %s", txRange[0], txRange[1]));
-            logger.info("Starting key for thread " + i + " is " + txStartKey);
-        }
-
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            logger.info("Getting starting key for thread " + i);
-            String startRow = checkpoints.getOrDefault(i, startingKeysForTx.get(i));
-            if (startRow == null) {
-                logger.severe("Starting key is null for thread " + i + " skipping");
-                if (table.equals("tx-by-addr")) {
-                    continue;
-                } else {
-                    throw new Exception("There should be a starting key for tx table");
-                }
-            }
-
-            boolean isCheckpointStart = checkpoints.get(i) != null;
-            logger.info("isCheckpointStart: " + isCheckpointStart);
-            String endRow;
-            if (i == this.THREAD_COUNT - 1) {
-                if (table.equals("tx")) {
-                    endRow = this.TX_LAST_KEY;
-                } else {
-                    endRow = this.TX_BY_ADDR_LAST_KEY;
-                }
-            } else {
-                endRow = startingKeysForTx.get(i + 1);
-                if (table.equals("tx-by-addr") && startingKeysForTx.get(i + 1) == null) {
-                    endRow = this.TX_BY_ADDR_LAST_KEY;
-                }
+            if (uploadedRanges.contains(startRow + "_" + endRow)) {
+                logger.info(String.format("Range %s - %s already uploaded, skipping", startRow, endRow));
+                continue;
             }
 
             logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
-            tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart));
+//            tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow));
         }
 
         return tasks;
     }
 
-    private String getThreadStartingKeyForTx(String tableName, String prefix, String maxPrefix) throws Exception {
-        if (tableName == null || prefix == null || maxPrefix == null) {
-            throw new IllegalArgumentException("Table name, prefix, and maxPrefix cannot be null");
-        }
-
-        if (!tableName.equals("tx-by-addr") && !tableName.equals("tx")) {
-            throw new IllegalArgumentException("Invalid table name: " + tableName + ". Must be 'tx' or 'tx-by-addr'");
-        }
-
-        try {
-            int prefixValue = prefix.charAt(0);
-            int maxPrefixValue = maxPrefix.charAt(0);
-            for (int i = prefixValue; i <= maxPrefixValue; i++) {
-                Query query = Query.create(TableId.of(tableName)).prefix(String.valueOf((char) i)).limit(1);
-                List<Row> rows = dataClient.readRowsCallable().all().call(query);
-                if (rows.size() > 0) {
-                    return rows.get(0).getKey().toStringUtf8();
-                }
-            }
-        } catch (Exception e) {
-            throw new Exception("Error getting starting key for thread " + prefix, e);
-        }
-        return null;
-    }
-
-    private Future<?> runTaskOnWorkerThread(int threadId, String tableName, String startRowKey, String endRowKey,
-                                               boolean isCheckpointStart) {
-        return executorService.submit(() -> splitRangeAndChainUploads(threadId, tableName, startRowKey, endRowKey,
-                        !isCheckpointStart));
+    private Future<?> runTaskOnWorkerThread(int threadId, String tableName, String startRowKey, String endRowKey) {
+        return executorService.submit(() -> splitRangeAndChainUploads(threadId, tableName, startRowKey, endRowKey));
     }
 
     private void splitRangeAndChainUploads(int threadId, String tableName, String currentStartRow,
-                                           String endRowKey, boolean includeStartRow) {
+                                           String endRowKey) {
 
         if (currentStartRow.compareTo(endRowKey) >= 0) {
             return;
@@ -310,8 +180,8 @@ public class BigTableToCosWriter {
         logger.info(String.format("Queueing task for thread %s, table %s, range %s - %s", threadId, tableName,
                 currentStartRow, endRowKey));
         try {
-            while (currentStartRow.compareTo(endRowKey) < 0) {
-                String currentEndRow = fetchBatch(tableName, currentStartRow, endRowKey, includeStartRow,
+            while (currentStartRow.compareTo(endRowKey) <= 0) {
+                String currentEndRow = fetchBatch(tableName, currentStartRow, endRowKey,
                         0);
                 if (currentEndRow == null) {
                     // empty batch, we're done
@@ -321,9 +191,8 @@ public class BigTableToCosWriter {
 
                 logger.info(
                         String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, currentEndRow));
-                updateCheckpoint(threadId, currentEndRow, tableName);
+                updateUploadedRanges(threadId, currentStartRow, currentEndRow, tableName);
                 currentStartRow = currentEndRow;
-                includeStartRow = false;
             }
         } catch (Exception e) {
             logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
@@ -332,8 +201,7 @@ public class BigTableToCosWriter {
         }
     }
 
-    private String fetchBatch(String tableName, String startRowKey, String endRowKey,
-                              boolean includeStartRow, int retryCount) throws IOException {
+    private String fetchBatch(String tableName, String startRowKey, String endRowKey, int retryCount) throws IOException {
         if (retryCount > 1) {
             return null;
         }
@@ -402,13 +270,10 @@ public class BigTableToCosWriter {
 
             try {
                 outputStream.getUploadFuture().join();
-                logger.info(String.format("Finished upload for fetch batch for %s - %s", rows, startRowKey, endRowKey));
-            } catch (CosServiceException e) {
-                e.printStackTrace();
-                return fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
+                logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
             } catch (CosClientException e) {
                 e.printStackTrace();
-                return fetchBatch(tableName, startRowKey, endRowKey, includeStartRow, retryCount + 1);
+                return fetchBatch(tableName, startRowKey, endRowKey, retryCount + 1);
             }
         }
 
@@ -428,43 +293,33 @@ public class BigTableToCosWriter {
             endRowKey = endRowKey.replace("/", "_");
         }
 
-        CustomS3FSDataOutputStream customFSDataOutputStream = new CustomS3FSDataOutputStream(
+        return new CustomS3FSDataOutputStream(
                 Paths.get("output/sequencefile/" + tableName + "/range_" + startRowKey + "_" + endRowKey), tableName,
                 SYNC_TYPE);
-
-        return customFSDataOutputStream;
     }
 
-    private void updateCheckpoint(int threadId, String endRowKey, String tableName) {
-        checkpoints.put(threadId, endRowKey);
-        saveCheckpoint(threadId, endRowKey, tableName);
+    private void updateUploadedRanges(int threadId, String startRowKey, String endRowKey, String tableName) {
+        uploadedRanges.add(String.format("%s_%s", startRowKey, endRowKey));
+        saveUploadedRanges(threadId, startRowKey, endRowKey, tableName);
     }
 
-    private void saveCheckpoint(int threadId, String endRowKey, String tableName) {
+    private void saveUploadedRanges(int threadId, String startRowKey, String endRowKey, String tableName) {
         try {
-            Path tableDir = Paths.get("checkpoints/" + tableName);
-            if (!Files.exists(tableDir)) {
-                Files.createDirectories(tableDir);
+            synchronized (this) { // Synchronize to ensure thread-safe writing
+                CosUtils.saveUploadedRangesToCos(tableName, this.MACHINE_IDENTIFIER, startRowKey, endRowKey);
             }
-            Path checkpointFile = tableDir.resolve("checkpoint_" + threadId + ".txt");
-            Files.write(checkpointFile, endRowKey.getBytes(), StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING);
         } catch (Exception e) {
             logger.severe(String.format("Error saving checkpoint for thread %s - %s", threadId, e));
         }
     }
 
-    private void loadCheckpoints(String tableName) {
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            Path checkpointPath = Paths.get("/app/checkpoints/" + tableName + "/checkpoint_" + i + ".txt");
-            if (Files.exists(checkpointPath)) {
-                try {
-                    String checkpoint = new String(Files.readAllBytes(checkpointPath));
-                    checkpoints.put(i, checkpoint);
-                } catch (Exception e) {
-                    logger.severe(String.format("Error loading checkpoint for thread %s - %s", i, e));
-                }
-            }
+    private void loadUploadedRanges(String tableName) {
+        try {
+            List<String> lines = CosUtils.loadUploadedRangesFromCos(tableName);
+            uploadedRanges.addAll(lines);
+        } catch (IOException e) {
+            logger.severe("Error loading checkpoints for table " + tableName);
+            e.printStackTrace();
         }
     }
 
@@ -472,30 +327,19 @@ public class BigTableToCosWriter {
         BigInteger start = new BigInteger(startKey, 16);
         BigInteger end = new BigInteger(lastKey, 16);
 
+        // Align start to the nearest subrange in order to get multiples of subrange size
         start = start.divide(BigInteger.valueOf(this.SUBRANGE_SIZE))
                 .multiply(BigInteger.valueOf(this.SUBRANGE_SIZE));
 
         BigInteger totalRange = end.subtract(start).add(BigInteger.ONE);
-        BigInteger intervalSize = totalRange.divide(BigInteger.valueOf(this.THREAD_COUNT));
-        BigInteger remainder = totalRange.mod(BigInteger.valueOf(this.THREAD_COUNT));
+
+        BigInteger numberOfSubranges = totalRange.divide(BigInteger.valueOf(this.SUBRANGE_SIZE)).add(BigInteger.ONE);
 
         List<String[]> intervals = new ArrayList<>();
         BigInteger currentStart = start;
 
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            currentStart = currentStart.divide(BigInteger.valueOf(this.SUBRANGE_SIZE))
-                    .multiply(BigInteger.valueOf(this.SUBRANGE_SIZE));
-
-            BigInteger currentEnd = currentStart.add(intervalSize).subtract(BigInteger.ONE);
-
-            if (remainder.compareTo(BigInteger.ZERO) > 0) {
-                currentEnd = currentEnd.add(BigInteger.ONE);
-                remainder = remainder.subtract(BigInteger.ONE);
-            }
-
-            currentEnd = currentEnd.divide(BigInteger.valueOf(this.SUBRANGE_SIZE))
-                    .multiply(BigInteger.valueOf(this.SUBRANGE_SIZE))
-                    .add(BigInteger.valueOf(this.SUBRANGE_SIZE - 1));
+        for (int i = 0; i < numberOfSubranges.intValue(); i++) {
+            BigInteger currentEnd = currentStart.add(BigInteger.valueOf(this.SUBRANGE_SIZE)).subtract(BigInteger.ONE);
 
             intervals.add(new String[] {
                     formatHex(currentStart),
@@ -508,23 +352,5 @@ public class BigTableToCosWriter {
 
     private String formatHex(BigInteger value) {
         return String.format("%016x", value);
-    }
-
-    public List<String[]> splitRangeTx() {
-        List<String[]> intervals = new ArrayList<>();
-        int totalChars = this.CHARACTERS.length;
-        int baseIntervalSize = totalChars / this.THREAD_COUNT;
-        int remainingChars = totalChars % this.THREAD_COUNT;
-
-        int currentIndex = 0;
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            int intervalSize = baseIntervalSize + (i < remainingChars ? 1 : 0);
-            int endIndex = currentIndex + intervalSize - 1;
-            String startKey = String.valueOf(this.CHARACTERS[currentIndex]);
-            String endKey = String.valueOf(this.CHARACTERS[endIndex]);
-            intervals.add(new String[] { startKey, endKey });
-            currentIndex = endIndex + 1;
-        }
-        return intervals;
     }
 }
