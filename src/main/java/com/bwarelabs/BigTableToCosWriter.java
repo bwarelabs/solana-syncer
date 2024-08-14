@@ -1,5 +1,6 @@
 package com.bwarelabs;
 
+import com.google.cloud.bigtable.data.v2.models.RowCell;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.serializer.WritableSerialization;
@@ -223,7 +224,13 @@ public class BigTableToCosWriter {
             int rows = 0;
             for (Row row: dataClient.readRows(query)) {
                 rows++;
-                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());      
+                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+
+                RowCell firstCell = row.getCells().iterator().next();
+                if (!firstCell.getQualifier().toStringUtf8().equals("proto")) {
+                    continue;
+                }
+
                 row.getCells().forEach(cell -> {
                     assert(cell.getQualifier().toStringUtf8().equals("proto"));
                     try {
