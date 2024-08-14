@@ -8,10 +8,13 @@ import org.apache.hadoop.hbase.io.ByteArrayOutputStream;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.io.compress.bzip2.Bzip2Decompressor;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.slf4j.LoggerFactory;
 import com.qcloud.cos.exception.*;
+
+import io.grpc.Codec.Gzip;
 
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.core.CredentialsProvider;
@@ -28,6 +31,8 @@ import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import solana.storage.ConfirmedBlock.*;
+import solana.storage.ConfirmedBlock.ConfirmedBlockOuterClass.ConfirmedBlock;
 
 import java.io.*;
 import java.math.BigInteger;
@@ -42,8 +47,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.logging.Level;
+import com.github.luben.zstd.ZstdBufferDecompressingStream;
+import com.github.luben.zstd.ZstdIOException;
+import com.github.luben.zstd.ZstdInputStream;
 
 import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 
 public class BigTableToCosWriter {
     private static final Logger logger = Logger.getLogger(BigTableToCosWriter.class.getName());
@@ -349,7 +359,40 @@ public class BigTableToCosWriter {
             int rows = 0;
             for (Row row: dataClient.readRows(query)) {
                 rows++;
-                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());      
+                row.getCells().forEach(cell -> {
+                    assert(cell.getQualifier().toStringUtf8().equals("proto"));
+                    try {
+                        InputStream input = cell.getValue().newInput();
+                        // highly unorthodox but there is no bincode implementation for java
+                        // so we rely on the first 4 bytes being an encoding of an enum
+                        byte[] decompressMethod = input.readNBytes(4);
+                        ConfirmedBlock block = null;
+                        if (decompressMethod[0] == 0) {
+                            // no compression
+                            block = ConfirmedBlock.parseFrom(input);
+                        } else if (decompressMethod[0] == 1) {
+                            // bzip2
+                            try (BZip2CompressorInputStream decompressor = new BZip2CompressorInputStream(cell.getValue().newInput())) {
+                                block = ConfirmedBlock.parseFrom(decompressor);
+                            }
+                        } else if (decompressMethod[0] == 2) {
+                            // gzip
+                            try (GzipCompressorInputStream decompressor = new GzipCompressorInputStream(cell.getValue().newInput())) {
+                                block = ConfirmedBlock.parseFrom(decompressor);
+                            }
+                        } else {
+                            // zstd
+                            assert(decompressMethod[0] == 3);
+                            try (ZstdInputStream decompressor = new ZstdInputStream(input)) {
+                                block = ConfirmedBlock.parseFrom(decompressor);                                
+                            }
+                        }
+                        System.out.println("got block " + block.getBlockhash());
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }                    
+                });         
                 customWriter.append(rowKey, row);
                 lastRow = row;
             }
