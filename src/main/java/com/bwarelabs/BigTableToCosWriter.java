@@ -1,6 +1,7 @@
 package com.bwarelabs;
 
 import com.google.cloud.bigtable.data.v2.models.RowCell;
+import com.google.protobuf.ByteString;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.serializer.WritableSerialization;
@@ -16,7 +17,9 @@ import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import solana.storage.ConfirmedBlock.ConfirmedBlockOuterClass;
 import solana.storage.ConfirmedBlock.ConfirmedBlockOuterClass.ConfirmedBlock;
+import org.bitcoinj.core.Base58;
 
 import java.io.*;
 import java.math.BigInteger;
@@ -53,9 +56,6 @@ public class BigTableToCosWriter {
         final Runnable loggerTask = () -> logForkJoinPoolStatus(pool);
         //scheduler.scheduleAtFixedRate(loggerTask, 0, 300, TimeUnit.SECONDS);
     }
-
-
-    private final char[] CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
 
     public BigTableToCosWriter(Properties properties) throws IOException {
         LogManager.getLogManager().readConfiguration(
@@ -136,7 +136,7 @@ public class BigTableToCosWriter {
     }
 
 
-    private List<Future<?>> writeBlocksOrEntries(String table) throws Exception {
+    private List<Future<?>> writeBlocksOrEntries(String table) {
         logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
 
         String lastKey = table.equals("entries") ? this.ENTRIES_LAST_KEY : this.BLOCKS_LAST_KEY;
@@ -215,8 +215,16 @@ public class BigTableToCosWriter {
                 WritableSerialization.class.getName());
 
         Row lastRow = null;
-        try (CustomS3FSDataOutputStream outputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
-             CustomSequenceFileWriter customWriter = new CustomSequenceFileWriter(hadoopConfig, outputStream)) {
+        try (
+            CustomS3FSDataOutputStream blocksOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
+             CustomSequenceFileWriter blocksCustomWriter = new CustomSequenceFileWriter(hadoopConfig, blocksOutputStream);
+
+             CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey, endRowKey);
+             CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txByAddrOutputStream);
+
+             CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx", startRowKey, endRowKey);
+             CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)
+        ) {
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
@@ -260,19 +268,60 @@ public class BigTableToCosWriter {
                             }
                         }
                         System.out.println("got block " + block.getBlockhash());
+
+                        List<ByteString> transactionSignaturesList = new ArrayList<>();
+                        List<ByteString> accountsList = new ArrayList<>();
+
+                        List<ConfirmedBlockOuterClass.ConfirmedTransaction> transactionList = block.getTransactionsList();
+                        for (ConfirmedBlockOuterClass.ConfirmedTransaction confirmedTransaction : transactionList) {
+                            ConfirmedBlockOuterClass.Transaction transaction = confirmedTransaction.getTransaction();
+
+                            List<ByteString> innertransactionSignaturesList = transaction.getSignaturesList();
+                            transactionSignaturesList.addAll(innertransactionSignaturesList);
+
+                            List<ByteString> innerAccountsList = transaction.getMessage().getAccountKeysList();
+                            accountsList.addAll(innerAccountsList);
+                        }
+
+//                        List<String> base58TransactionSignatures = new ArrayList<>();
+//                        for (ByteString signature : transactionSignaturesList) {
+//                            base58TransactionSignatures.add(Base58.encode(signature.toByteArray()));
+//                        }
+
+                        List<String> base58Accounts = new ArrayList<>();
+                        for (ByteString account : accountsList) {
+                            String base58Account = Base58.encode(account.toByteArray());
+
+                            long blockHeight = block.getBlockHeight().getBlockHeight();
+                            long negatedBlockHeight = ~blockHeight;
+
+                            String formattedBlockHeight = String.format("%016x", negatedBlockHeight);
+
+                            base58Account = base58Account + "/" + formattedBlockHeight;
+                            base58Accounts.add(base58Account);
+                        }
+
+//                        System.out.println("base58TransactionSignatures: " + base58TransactionSignatures);
+//                        System.out.println("base58Accounts: " + base58Accounts);
+
+                        fetchAndWriteDataForSignatures(txCustomWriter, transactionSignaturesList);
+                        fetchAndWriteDataForAccounts(txByAddrCustomWriter, base58Accounts);
+
                     } catch (Exception e) {
                         e.printStackTrace();
                     }                    
-                });         
-                customWriter.append(rowKey, row);
+                });
+                blocksCustomWriter.append(rowKey, row);
                 lastRow = row;
             }
-            customWriter.close();
+            blocksCustomWriter.close();
 
             logger.info(String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             try {
-                outputStream.getUploadFuture().join();
+                blocksOutputStream.getUploadFuture().join();
+                txByAddrOutputStream.getUploadFuture().join();
+                txOutputStream.getUploadFuture().join();
                 logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
             } catch (CosClientException e) {
                 e.printStackTrace();
@@ -284,6 +333,43 @@ public class BigTableToCosWriter {
             return lastRow.getKey().toStringUtf8();
         }
         return null;
+    }
+
+    private void fetchAndWriteDataForSignatures(CustomSequenceFileWriter writer, List<ByteString> signatures) {
+        for (ByteString signature : signatures) {
+            try {
+                Row row = dataClient.readRow(TableId.of("tx"), signature);
+
+                if (row != null) {
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                    writer.append(rowKey, row);
+                } else {
+                    logger.warning("No data found for signature: " + Base58.encode(signature.toByteArray()));
+                }
+            } catch (Exception e) {
+                logger.severe("Error fetching/writing data for signature: " + Base58.encode(signature.toByteArray()));
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private void fetchAndWriteDataForAccounts(CustomSequenceFileWriter writer, List<String> accounts) {
+        for (String account : accounts) {
+            byte[] accountKey =  Base58.decode(account);
+            try {
+                Row row = dataClient.readRow(TableId.of("tx-by-addr"), ByteString.copyFrom(accountKey));
+
+                if (row != null) {
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                    writer.append(rowKey, row);
+                } else {
+                    logger.warning("No data found for account: " + account);
+                }
+            } catch (Exception e) {
+                logger.severe("Error fetching/writing data for account: " + account);
+                e.printStackTrace();
+            }
+        }
     }
 
     private CustomS3FSDataOutputStream getS3OutputStream(String tableName, String startRowKey,
