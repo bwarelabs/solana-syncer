@@ -42,7 +42,6 @@ public class BigTableToCosWriter {
     private final String ENTRIES_START_KEY;
     private final String ENTRIES_LAST_KEY;
     private final String SYNC_TYPE;
-    private final String MACHINE_IDENTIFIER;
     private final List<String> uploadedRanges = new ArrayList<>();
     private final BigtableDataSettings settings;
     private final BigtableDataClient dataClient;
@@ -68,7 +67,6 @@ public class BigTableToCosWriter {
         this.ENTRIES_START_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-start-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
         this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
-        this.MACHINE_IDENTIFIER = Utils.getRequiredProperty(properties, "machine-identifier");
 
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
@@ -160,40 +158,38 @@ public class BigTableToCosWriter {
             }
 
             logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
-//            tasks.add(runTaskOnWorkerThread(i, table, startRow, endRow));
+            tasks.add(runTaskOnWorkerThread(table, startRow, endRow));
         }
 
         return tasks;
     }
 
-    private Future<?> runTaskOnWorkerThread(int threadId, String tableName, String startRowKey, String endRowKey) {
-        return executorService.submit(() -> splitRangeAndChainUploads(threadId, tableName, startRowKey, endRowKey));
+    private Future<?> runTaskOnWorkerThread(String tableName, String startRowKey, String endRowKey) {
+        return executorService.submit(() -> startFetchBatch(tableName, startRowKey, endRowKey));
     }
 
-    private void splitRangeAndChainUploads(int threadId, String tableName, String currentStartRow,
-                                           String endRowKey) {
+    private void startFetchBatch(String tableName, String currentStartRow, String endRowKey) {
+        long threadId = Thread.currentThread().getId();
+        logger.info(String.format("Thread %s starting task for table %s, range %s - %s", threadId, tableName,
+                currentStartRow, endRowKey));
 
         if (currentStartRow.compareTo(endRowKey) >= 0) {
+            logger.info(String.format("Invalid range %s - %s", currentStartRow, endRowKey));
             return;
         }
 
-        logger.info(String.format("Queueing task for thread %s, table %s, range %s - %s", threadId, tableName,
-                currentStartRow, endRowKey));
         try {
-            while (currentStartRow.compareTo(endRowKey) <= 0) {
-                String currentEndRow = fetchBatch(tableName, currentStartRow, endRowKey,
-                        0);
-                if (currentEndRow == null) {
-                    // empty batch, we're done
-                    logger.info(String.format("[%s] - empty batch for %s - %s", threadId, currentStartRow, currentEndRow));
-                    return;
-                }
-
-                logger.info(
-                        String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, currentEndRow));
-                updateUploadedRanges(threadId, currentStartRow, currentEndRow, tableName);
-                currentStartRow = currentEndRow;
+            String currentEndRow = fetchBatch(tableName, currentStartRow, endRowKey,
+                    0);
+            if (currentEndRow == null) {
+                // empty batch, we're done
+                logger.info(String.format("Empty batch for %s - %s", currentStartRow, currentEndRow));
+                return;
             }
+
+            logger.info(
+                    String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, currentEndRow));
+            updateUploadedRanges(currentStartRow, currentEndRow, tableName);
         } catch (Exception e) {
             logger.log(Level.SEVERE, String.format("Error processing range %s - %s in table %s",
                     currentStartRow, endRowKey, tableName), e);
@@ -298,18 +294,18 @@ public class BigTableToCosWriter {
                 SYNC_TYPE);
     }
 
-    private void updateUploadedRanges(int threadId, String startRowKey, String endRowKey, String tableName) {
+    private void updateUploadedRanges(String startRowKey, String endRowKey, String tableName) {
         uploadedRanges.add(String.format("%s_%s", startRowKey, endRowKey));
-        saveUploadedRanges(threadId, startRowKey, endRowKey, tableName);
+        saveUploadedRanges(startRowKey, endRowKey, tableName);
     }
 
-    private void saveUploadedRanges(int threadId, String startRowKey, String endRowKey, String tableName) {
+    private void saveUploadedRanges(String startRowKey, String endRowKey, String tableName) {
         try {
-            synchronized (this) { // Synchronize to ensure thread-safe writing
-                CosUtils.saveUploadedRangesToCos(tableName, this.MACHINE_IDENTIFIER, startRowKey, endRowKey);
-            }
+            CosUtils.saveUploadedRangesToCos(tableName, startRowKey, endRowKey);
         } catch (Exception e) {
-            logger.severe(String.format("Error saving checkpoint for thread %s - %s", threadId, e));
+            logger.severe(String.format("Error saving checkpoint for table %s with range %s - %s", tableName, startRowKey, endRowKey));
+            e.printStackTrace();
+            throw e;
         }
     }
 

@@ -222,36 +222,30 @@ public class CosUtils {
         }
     }
 
-    public static void saveUploadedRangesToCos(String machineIdentifier, String tableName, String startRowKey, String endRowKey) {
-        String checkpointKey = String.format("checkpoints/%s/%s/uploadedRanges.txt",tableName, machineIdentifier);
-        String checkpointData = String.format("%s_%s\n", startRowKey, endRowKey);
+    public static void saveUploadedRangesToCos(String tableName, String startRowKey, String endRowKey) {
+        String rangeFileName = String.format("checkpoints/%s/%s_%s.txt", tableName, startRowKey, endRowKey);
+        String fileContent = String.format("%s_%s\n", startRowKey, endRowKey);
 
         try {
-            List<String> existingCheckpoints = loadUploadedRangesFromCos(tableName);
-
-            existingCheckpoints.add(checkpointData);
-
-            StringBuilder combinedData = new StringBuilder();
-            for (String checkpoint : existingCheckpoints) {
-                combinedData.append(checkpoint);
-            }
-
-            byte[] bytes = combinedData.toString().getBytes(StandardCharsets.UTF_8);
+            byte[] bytes = fileContent.getBytes(StandardCharsets.UTF_8);
             ByteArrayInputStream inputStream = new ByteArrayInputStream(bytes);
 
-            PutObjectRequest putObjectRequest = new PutObjectRequest(BUCKET_NAME, checkpointKey, inputStream, new ObjectMetadata());
+            ObjectMetadata metadata = new ObjectMetadata();
+            metadata.setContentLength(bytes.length);
+
+            PutObjectRequest putObjectRequest = new PutObjectRequest(BUCKET_NAME, rangeFileName, inputStream, metadata);
             cosClient.putObject(putObjectRequest);
 
-            logger.info("Checkpoint saved to COS for table " + tableName);
+            logger.info("Range file saved to COS for table " + tableName + ": " + rangeFileName);
         } catch (Exception e) {
-            logger.severe("Error saving checkpoint to COS: " + e.getMessage());
+            logger.severe("Error saving range file to COS: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
     public static List<String> loadUploadedRangesFromCos(String tableName) throws IOException {
         String checkpointPrefix = String.format("checkpoints/%s/", tableName);
-        List<String> checkpoints = new ArrayList<>();
+        List<String> uploadedRanges = new ArrayList<>();
 
         try {
             ListObjectsRequest listObjectsRequest = new ListObjectsRequest()
@@ -265,15 +259,11 @@ public class CosUtils {
 
                 for (COSObjectSummary objectSummary : objectListing.getObjectSummaries()) {
                     String checkpointKey = objectSummary.getKey();
+                    String fileName = checkpointKey.substring(checkpointKey.lastIndexOf('/') + 1);
 
-                    COSObject cosObject = cosClient.getObject(BUCKET_NAME, checkpointKey);
-                    InputStream inputStream = cosObject.getObjectContent();
-
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-                        String line;
-                        while ((line = reader.readLine()) != null) {
-                            checkpoints.add(line);
-                        }
+                    if (fileName.endsWith(".txt")) {
+                        String range = fileName.replace(".txt", "");
+                        uploadedRanges.add(range);
                     }
                 }
 
@@ -289,6 +279,6 @@ public class CosUtils {
             throw e;
         }
 
-        return checkpoints;
+        return uploadedRanges;
     }
 }
