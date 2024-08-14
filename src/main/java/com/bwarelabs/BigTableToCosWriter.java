@@ -269,18 +269,17 @@ public class BigTableToCosWriter {
                         }
                         System.out.println("got block " + block.getBlockhash());
 
-                        List<ByteString> transactionSignaturesList = new ArrayList<>();
-                        List<ByteString> accountsList = new ArrayList<>();
+                        HashSet<ByteString> accounts = new HashSet<>();
 
+                        Query txQuery = Query.create(TableId.of("tx"));
                         List<ConfirmedBlockOuterClass.ConfirmedTransaction> transactionList = block.getTransactionsList();
                         for (ConfirmedBlockOuterClass.ConfirmedTransaction confirmedTransaction : transactionList) {
                             ConfirmedBlockOuterClass.Transaction transaction = confirmedTransaction.getTransaction();
 
-                            List<ByteString> innertransactionSignaturesList = transaction.getSignaturesList();
-                            transactionSignaturesList.addAll(innertransactionSignaturesList);
-
-                            List<ByteString> innerAccountsList = transaction.getMessage().getAccountKeysList();
-                            accountsList.addAll(innerAccountsList);
+                            String txKey = Base58.encode(transaction.getSignatures(0).toByteArray());
+                            txQuery = txQuery.rowKey(txKey);
+                            accounts.addAll(transaction.getMessage().getAccountKeysList());
+                            //logger.info("got tx " + txKey);
                         }
 
 //                        List<String> base58TransactionSignatures = new ArrayList<>();
@@ -288,24 +287,31 @@ public class BigTableToCosWriter {
 //                            base58TransactionSignatures.add(Base58.encode(signature.toByteArray()));
 //                        }
 
-                        List<String> base58Accounts = new ArrayList<>();
-                        for (ByteString account : accountsList) {
-                            String base58Account = Base58.encode(account.toByteArray());
+                        // List<String> base58Accounts = new ArrayList<>();
+                        // for (ByteString account : accountsList) {
+                        //     String base58Account = Base58.encode(account.toByteArray());
 
-                            long blockHeight = block.getBlockHeight().getBlockHeight();
-                            long negatedBlockHeight = ~blockHeight;
+                        //     long blockHeight = block.getBlockHeight().getBlockHeight();
+                        //     long negatedBlockHeight = ~blockHeight;
 
-                            String formattedBlockHeight = String.format("%016x", negatedBlockHeight);
+                        //     String formattedBlockHeight = String.format("%016x", negatedBlockHeight);
 
-                            base58Account = base58Account + "/" + formattedBlockHeight;
-                            base58Accounts.add(base58Account);
+                        //     base58Account = base58Account + "/" + formattedBlockHeight;
+                        //     base58Accounts.add(base58Account);
+                        // }
+                        long slot = Long.parseLong(row.getKey().toStringUtf8(), 16);
+                        Query txByAddrQuery = Query.create(TableId.of("tx-by-addr"));
+                        for (ByteString account : accounts) {
+                            String base58Account = String.format("%s/%016x", Base58.encode(account.toByteArray()), ~slot);
+                            txByAddrQuery = txByAddrQuery.rowKey(base58Account);
+                            logger.info("got account " + base58Account);
                         }
 
 //                        System.out.println("base58TransactionSignatures: " + base58TransactionSignatures);
 //                        System.out.println("base58Accounts: " + base58Accounts);
 
-                        fetchAndWriteDataForSignatures(txCustomWriter, transactionSignaturesList);
-                        fetchAndWriteDataForAccounts(txByAddrCustomWriter, base58Accounts);
+                        // fetchAndWriteData(txCustomWriter, txQuery);
+                        fetchAndWriteData(txByAddrCustomWriter, txByAddrQuery);
 
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -335,42 +341,42 @@ public class BigTableToCosWriter {
         return null;
     }
 
-    private void fetchAndWriteDataForSignatures(CustomSequenceFileWriter writer, List<ByteString> signatures) {
-        for (ByteString signature : signatures) {
+    private void fetchAndWriteData(CustomSequenceFileWriter writer, Query query) {
+   
             try {
-                Row row = dataClient.readRow(TableId.of("tx"), signature);
-
-                if (row != null) {
+                int rows = 0;
+                for (Row row: dataClient.readRows(query)) {
                     ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                    logger.info("got from bigtable " + row.getKey().toStringUtf8());
                     writer.append(rowKey, row);
-                } else {
-                    logger.warning("No data found for signature: " + Base58.encode(signature.toByteArray()));
+                    rows ++;
                 }
+                assert(rows > 0);
+                logger.info("got " + rows + " rows");
             } catch (Exception e) {
-                logger.severe("Error fetching/writing data for signature: " + Base58.encode(signature.toByteArray()));
                 e.printStackTrace();
             }
         }
-    }
 
-    private void fetchAndWriteDataForAccounts(CustomSequenceFileWriter writer, List<String> accounts) {
-        for (String account : accounts) {
-            byte[] accountKey =  Base58.decode(account);
-            try {
-                Row row = dataClient.readRow(TableId.of("tx-by-addr"), ByteString.copyFrom(accountKey));
 
-                if (row != null) {
-                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
-                    writer.append(rowKey, row);
-                } else {
-                    logger.warning("No data found for account: " + account);
-                }
-            } catch (Exception e) {
-                logger.severe("Error fetching/writing data for account: " + account);
-                e.printStackTrace();
-            }
-        }
-    }
+    // private void fetchAndWriteDataForAccounts(CustomSequenceFileWriter writer, List<String> accounts) {
+    //     for (String account : accounts) {
+    //         byte[] accountKey =  Base58.decode(account);
+    //         try {
+    //             Row row = dataClient.readRow(TableId.of("tx-by-addr"), ByteString.copyFrom(accountKey));
+
+    //             if (row != null) {
+    //                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+    //                 writer.append(rowKey, row);
+    //             } else {
+    //                 logger.warning("No data found for account: " + account);
+    //             }
+    //         } catch (Exception e) {
+    //             logger.severe("Error fetching/writing data for account: " + account);
+    //             e.printStackTrace();
+    //         }
+    //     }
+    // }
 
     private CustomS3FSDataOutputStream getS3OutputStream(String tableName, String startRowKey,
                                                          String endRowKey) throws IOException {
