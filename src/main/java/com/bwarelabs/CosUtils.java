@@ -29,6 +29,7 @@ public class CosUtils {
     private static final String REGION;
     private static final String AWS_ID_KEY;
     private static final String AWS_SECRET_KEY;
+    private static final String SYNC_TYPE; 
     private static final int BUFFER_SIZE = 15 * 1024 * 1024; // 15MB
 
     private static final int MAX_RETRIES = 2;
@@ -112,6 +113,7 @@ public class CosUtils {
         CONNECTION_TIMEOUT = Integer
                 .parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
         THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
+        SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
         System.setProperty(SkipMd5CheckStrategy.DISABLE_PUT_OBJECT_MD5_VALIDATION_PROPERTY, "true");
     }
 
@@ -120,7 +122,7 @@ public class CosUtils {
     }
 
     public static final COSClient cosClient = createCOSClient();
-    private static final ExecutorService uploadExecutorService = createUploadExecutorService();
+    public static final ExecutorService uploadExecutorService = createUploadExecutorService();
 
     public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(final String key,
             InputStream inputStream) {
@@ -222,8 +224,12 @@ public class CosUtils {
         }
     }
 
+    public static String getCheckpointPrefix(String tableName) {
+        return String.format("%s/checkpoints/%s/", SYNC_TYPE, tableName);
+    }
+
     public static void saveUploadedRangesToCos(String tableName, String startRowKey, String endRowKey) {
-        String rangeFileName = String.format("checkpoints/%s/%s_%s.txt", tableName, startRowKey, endRowKey);
+        String rangeFileName = String.format("%s/%s_%s.txt", getCheckpointPrefix(tableName), startRowKey, endRowKey);
         String fileContent = String.format("%s_%s\n", startRowKey, endRowKey);
 
         try {
@@ -244,7 +250,7 @@ public class CosUtils {
     }
 
     public static List<String> loadUploadedRangesFromCos(String tableName) throws IOException {
-        String checkpointPrefix = String.format("checkpoints/%s/", tableName);
+        String checkpointPrefix = getCheckpointPrefix(tableName);
         List<String> uploadedRanges = new ArrayList<>();
 
         try {

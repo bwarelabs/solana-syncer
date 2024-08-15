@@ -48,11 +48,13 @@ public class App {
       try {
         BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties);
         bigTableToCosWriter.write(bigtableTable);
-        logger.info("Done!");
+       
         CosUtils.cosClient.shutdown();
+        CosUtils.uploadExecutorService.shutdown();
       } catch (Exception e) {
         logger.severe(String.format("An error occurred while writing SequenceFiles from Bigtable table: %s - %s", bigtableTable, e));
       }
+      logger.info("Done!");
       return;
     }
 
