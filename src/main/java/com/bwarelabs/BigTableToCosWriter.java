@@ -248,13 +248,13 @@ public class BigTableToCosWriter {
                         } else if (decompressMethod[0] == 1) {
                             // bzip2
                             try (BZip2CompressorInputStream decompressor = new BZip2CompressorInputStream(
-                                    cell.getValue().newInput())) {
+                                    input)) {
                                 block = ConfirmedBlock.parseFrom(decompressor);
                             }
                         } else if (decompressMethod[0] == 2) {
                             // gzip
                             try (GzipCompressorInputStream decompressor = new GzipCompressorInputStream(
-                                    cell.getValue().newInput())) {
+                                    input)) {
                                 block = ConfirmedBlock.parseFrom(decompressor);
                             }
                         } else {
