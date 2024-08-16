@@ -168,21 +168,21 @@ public class BigTableToCosWriter {
         logger.info(String.format("Thread %s starting task for table %s, range %s - %s", threadId, tableName,
                 currentStartRow, endRowKey));
 
-        if (currentStartRow.compareTo(endRowKey) >= 0) {
-            logger.info(String.format("Invalid range %s - %s", currentStartRow, endRowKey));
-            return;
-        }
+//        if (currentStartRow.compareTo(endRowKey) >= 0) {
+//            logger.info(String.format("Invalid range %s - %s", currentStartRow, endRowKey));
+//            return;
+//        }
 
         try {
-            String currentEndRow = fetchBatch(tableName, currentStartRow, endRowKey, 0);
-            if (currentEndRow == null) {
-                // empty batch, we're done
-                logger.info(String.format("Empty batch for %s - %s", currentStartRow, currentEndRow));
-                return;
-            }
+            fetchBatch(tableName, currentStartRow, endRowKey, 0);
+//            if (currentEndRow == null) {
+//                // empty batch, we're done
+//                logger.info(String.format("Empty batch for %s - %s", currentStartRow, currentEndRow));
+//                return;
+//            }
 
-            logger.info(String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, currentEndRow));
-            updateUploadedRanges(currentStartRow, currentEndRow, tableName);
+            logger.info(String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, endRowKey));
+            updateUploadedRanges(currentStartRow, endRowKey, tableName);
         } catch (Exception e) {
             logger.log(Level.SEVERE,
                     String.format("Error processing range %s - %s in table %s", currentStartRow, endRowKey, tableName),
@@ -191,10 +191,10 @@ public class BigTableToCosWriter {
         }
     }
 
-    private String fetchBatch(String tableName, String startRowKey, String endRowKey, int retryCount)
+    private void fetchBatch(String tableName, String startRowKey, String endRowKey, int retryCount)
             throws IOException {
         if (retryCount > 1) {
-            return null;
+            throw new IOException("Failed to fetch batch after 2 retries");
         }
 
         if (tableName.equals("blocks") || tableName.equals("entries")) {
@@ -209,15 +209,16 @@ public class BigTableToCosWriter {
 
         try (CustomS3FSDataOutputStream blocksOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
                 CustomSequenceFileWriter blocksCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
-                        blocksOutputStream);
+                        blocksOutputStream)
 
-                CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey,
-                        endRowKey);
-                CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
-                        txByAddrOutputStream);
-
-                CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx", startRowKey, endRowKey);
-                CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)) {
+//                CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey,
+//                        endRowKey);
+//                CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
+//                        txByAddrOutputStream);
+//
+//                CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx", startRowKey, endRowKey);
+//                CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)
+            ) {
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
@@ -229,87 +230,86 @@ public class BigTableToCosWriter {
                 rows++;
                 ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
 
-                RowCell firstCell = row.getCells().iterator().next();
-                if (!firstCell.getQualifier().toStringUtf8().equals("proto")) {
-                    continue;
-                }
-
-                row.getCells().forEach(cell -> {
-                    assert (cell.getQualifier().toStringUtf8().equals("proto"));
-                    try {
-                        InputStream input = cell.getValue().newInput();
-                        // highly unorthodox but there is no bincode implementation for java
-                        // so we rely on the first 4 bytes being an encoding of an enum
-                        byte[] decompressMethod = input.readNBytes(4);
-                        ConfirmedBlock block = null;
-                        if (decompressMethod[0] == 0) {
-                            // no compression
-                            block = ConfirmedBlock.parseFrom(input);
-                        } else if (decompressMethod[0] == 1) {
-                            // bzip2
-                            try (BZip2CompressorInputStream decompressor = new BZip2CompressorInputStream(
-                                    input)) {
-                                block = ConfirmedBlock.parseFrom(decompressor);
-                            }
-                        } else if (decompressMethod[0] == 2) {
-                            // gzip
-                            try (GzipCompressorInputStream decompressor = new GzipCompressorInputStream(
-                                    input)) {
-                                block = ConfirmedBlock.parseFrom(decompressor);
-                            }
-                        } else {
-                            // zstd
-                            assert (decompressMethod[0] == 3);
-                            try (ZstdInputStream decompressor = new ZstdInputStream(input)) {
-                                block = ConfirmedBlock.parseFrom(decompressor);
-                            }
-                        }
-                        // System.out.println("got block " + block.getBlockhash());
-
-                        HashSet<ByteString> accounts = new HashSet<>();
-                        List<ConfirmedBlockOuterClass.ConfirmedTransaction> transactionList = block
-                                .getTransactionsList();
-                        for (ConfirmedBlockOuterClass.ConfirmedTransaction confirmedTransaction : transactionList) {
-                            ConfirmedBlockOuterClass.Transaction transaction = confirmedTransaction.getTransaction();
-
-                            String txKey = Base58.encode(transaction.getSignatures(0).toByteArray());
-                            txKeys.add(txKey);
-                            accounts.addAll(transaction.getMessage().getAccountKeysList());
-                        }
-
-                        long slot = Long.parseLong(row.getKey().toStringUtf8(), 16);                        
-                        for (ByteString account : accounts) {
-                            String base58Account = String.format("%s/%016x", Base58.encode(account.toByteArray()),
-                                    ~slot);
-                            txByAddrKeys.add(base58Account);
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                });
+//                RowCell firstCell = row.getCells().iterator().next();
+//                if (!firstCell.getQualifier().toStringUtf8().equals("proto")) {
+//                    continue;
+//                }
+//
+//                row.getCells().forEach(cell -> {
+//                    assert (cell.getQualifier().toStringUtf8().equals("proto"));
+//                    try {
+//                        InputStream input = cell.getValue().newInput();
+//                        // highly unorthodox but there is no bincode implementation for java
+//                        // so we rely on the first 4 bytes being an encoding of an enum
+//                        byte[] decompressMethod = input.readNBytes(4);
+//                        ConfirmedBlock block = null;
+//                        if (decompressMethod[0] == 0) {
+//                            // no compression
+//                            block = ConfirmedBlock.parseFrom(input);
+//                        } else if (decompressMethod[0] == 1) {
+//                            // bzip2
+//                            try (BZip2CompressorInputStream decompressor = new BZip2CompressorInputStream(
+//                                    input)) {
+//                                block = ConfirmedBlock.parseFrom(decompressor);
+//                            }
+//                        } else if (decompressMethod[0] == 2) {
+//                            // gzip
+//                            try (GzipCompressorInputStream decompressor = new GzipCompressorInputStream(
+//                                    input)) {
+//                                block = ConfirmedBlock.parseFrom(decompressor);
+//                            }
+//                        } else {
+//                            // zstd
+//                            assert (decompressMethod[0] == 3);
+//                            try (ZstdInputStream decompressor = new ZstdInputStream(input)) {
+//                                block = ConfirmedBlock.parseFrom(decompressor);
+//                            }
+//                        }
+//                        // System.out.println("got block " + block.getBlockhash());
+//
+//                        HashSet<ByteString> accounts = new HashSet<>();
+//                        List<ConfirmedBlockOuterClass.ConfirmedTransaction> transactionList = block
+//                                .getTransactionsList();
+//                        for (ConfirmedBlockOuterClass.ConfirmedTransaction confirmedTransaction : transactionList) {
+//                            ConfirmedBlockOuterClass.Transaction transaction = confirmedTransaction.getTransaction();
+//
+//                            String txKey = Base58.encode(transaction.getSignatures(0).toByteArray());
+//                            txKeys.add(txKey);
+//                            accounts.addAll(transaction.getMessage().getAccountKeysList());
+//                        }
+//
+//                        long slot = Long.parseLong(row.getKey().toStringUtf8(), 16);
+//                        for (ByteString account : accounts) {
+//                            String base58Account = String.format("%s/%016x", Base58.encode(account.toByteArray()),
+//                                    ~slot);
+//                            txByAddrKeys.add(base58Account);
+//                        }
+//                    } catch (Exception e) {
+//                        e.printStackTrace();
+//                    }
+//                });
                 blocksCustomWriter.append(rowKey, row);
 
             }
-            fetchAndWriteData(txCustomWriter, TableId.of("tx"), txKeys);
-            fetchAndWriteData(txByAddrCustomWriter, TableId.of("tx-by-addr"), txByAddrKeys);
+//            fetchAndWriteData(txCustomWriter, TableId.of("tx"), txKeys);
+//            fetchAndWriteData(txByAddrCustomWriter, TableId.of("tx-by-addr"), txByAddrKeys);
             blocksCustomWriter.close();
-            txCustomWriter.close();
-            txByAddrCustomWriter.close();
+//            txCustomWriter.close();
+//            txByAddrCustomWriter.close();
 
             logger.info(
                     String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             try {
                 blocksOutputStream.getUploadFuture().join();
-                txByAddrOutputStream.getUploadFuture().join();
-                txOutputStream.getUploadFuture().join();
+//                txByAddrOutputStream.getUploadFuture().join();
+//                txOutputStream.getUploadFuture().join();
                 logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
             } catch (CosClientException e) {
                 e.printStackTrace();
-                return fetchBatch(tableName, startRowKey, endRowKey, retryCount + 1);
+                fetchBatch(tableName, startRowKey, endRowKey, retryCount + 1);
             }
         }
-        return null;
     }
 
     private void fetchAndWriteData(CustomSequenceFileWriter writer, TableId table, Set<String> keys) {
@@ -383,13 +383,15 @@ public class BigTableToCosWriter {
         BigInteger start = new BigInteger(startKey, 16);
         BigInteger end = new BigInteger(lastKey, 16);
 
-        // Align start to the nearest subrange in order to get multiples of subrange
-        // size
+        // Align start down to the nearest subrange in order to get multiples of subrange size
         start = start.divide(BigInteger.valueOf(this.SUBRANGE_SIZE)).multiply(BigInteger.valueOf(this.SUBRANGE_SIZE));
 
         BigInteger totalRange = end.subtract(start).add(BigInteger.ONE);
+        BigInteger numberOfSubranges = totalRange.divide(BigInteger.valueOf(this.SUBRANGE_SIZE));
 
-        BigInteger numberOfSubranges = totalRange.divide(BigInteger.valueOf(this.SUBRANGE_SIZE)).add(BigInteger.ONE);
+        if (totalRange.mod(BigInteger.valueOf(this.SUBRANGE_SIZE)).compareTo(BigInteger.ZERO) > 0) {
+            numberOfSubranges = numberOfSubranges.add(BigInteger.ONE);
+        }
 
         List<String[]> intervals = new ArrayList<>();
         BigInteger currentStart = start;

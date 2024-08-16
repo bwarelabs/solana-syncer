@@ -225,7 +225,7 @@ public class CosUtils {
     }
 
     public static String getCheckpointPrefix(String tableName) {
-        return String.format("%s/checkpoints/%s/", SYNC_TYPE, tableName);
+        return String.format("%s/checkpoints/%s", SYNC_TYPE, tableName);
     }
 
     public static void saveUploadedRangesToCos(String tableName, String startRowKey, String endRowKey) {
