@@ -224,86 +224,30 @@ public class BigTableToCosWriter {
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
 
             int rows = 0;
-            final Set<String> txKeys = new TreeSet<>();
-            final Set<String> txByAddrKeys = new TreeSet<>();
-            for (Row row : dataClient.readRows(query)) {
-                rows++;
-                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
 
-//                RowCell firstCell = row.getCells().iterator().next();
-//                if (!firstCell.getQualifier().toStringUtf8().equals("proto")) {
-//                    continue;
-//                }
-//
-//                row.getCells().forEach(cell -> {
-//                    assert (cell.getQualifier().toStringUtf8().equals("proto"));
-//                    try {
-//                        InputStream input = cell.getValue().newInput();
-//                        // highly unorthodox but there is no bincode implementation for java
-//                        // so we rely on the first 4 bytes being an encoding of an enum
-//                        byte[] decompressMethod = input.readNBytes(4);
-//                        ConfirmedBlock block = null;
-//                        if (decompressMethod[0] == 0) {
-//                            // no compression
-//                            block = ConfirmedBlock.parseFrom(input);
-//                        } else if (decompressMethod[0] == 1) {
-//                            // bzip2
-//                            try (BZip2CompressorInputStream decompressor = new BZip2CompressorInputStream(
-//                                    input)) {
-//                                block = ConfirmedBlock.parseFrom(decompressor);
-//                            }
-//                        } else if (decompressMethod[0] == 2) {
-//                            // gzip
-//                            try (GzipCompressorInputStream decompressor = new GzipCompressorInputStream(
-//                                    input)) {
-//                                block = ConfirmedBlock.parseFrom(decompressor);
-//                            }
-//                        } else {
-//                            // zstd
-//                            assert (decompressMethod[0] == 3);
-//                            try (ZstdInputStream decompressor = new ZstdInputStream(input)) {
-//                                block = ConfirmedBlock.parseFrom(decompressor);
-//                            }
-//                        }
-//                        // System.out.println("got block " + block.getBlockhash());
-//
-//                        HashSet<ByteString> accounts = new HashSet<>();
-//                        List<ConfirmedBlockOuterClass.ConfirmedTransaction> transactionList = block
-//                                .getTransactionsList();
-//                        for (ConfirmedBlockOuterClass.ConfirmedTransaction confirmedTransaction : transactionList) {
-//                            ConfirmedBlockOuterClass.Transaction transaction = confirmedTransaction.getTransaction();
-//
-//                            String txKey = Base58.encode(transaction.getSignatures(0).toByteArray());
-//                            txKeys.add(txKey);
-//                            accounts.addAll(transaction.getMessage().getAccountKeysList());
-//                        }
-//
-//                        long slot = Long.parseLong(row.getKey().toStringUtf8(), 16);
-//                        for (ByteString account : accounts) {
-//                            String base58Account = String.format("%s/%016x", Base58.encode(account.toByteArray()),
-//                                    ~slot);
-//                            txByAddrKeys.add(base58Account);
-//                        }
-//                    } catch (Exception e) {
-//                        e.printStackTrace();
-//                    }
-//                });
-                blocksCustomWriter.append(rowKey, row);
+            try {
+                for (Row row : dataClient.readRows(query)) {
+                    rows++;
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
 
+                    blocksCustomWriter.append(rowKey, row);
+                }
+            } catch (Exception e) {
+                logger.severe(String.format("Error fetching batch for %s - %s, thrown inside of for loop", startRowKey, endRowKey));
+                if (!blocksOutputStream.isControlledClose()) {
+                    throw e;
+                }
+
+                CosUtils.saveFailedRangesToCos(tableName, startRowKey, endRowKey);
             }
-//            fetchAndWriteData(txCustomWriter, TableId.of("tx"), txKeys);
-//            fetchAndWriteData(txByAddrCustomWriter, TableId.of("tx-by-addr"), txByAddrKeys);
+
             blocksCustomWriter.close();
-//            txCustomWriter.close();
-//            txByAddrCustomWriter.close();
 
             logger.info(
                     String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             try {
                 blocksOutputStream.getUploadFuture().join();
-//                txByAddrOutputStream.getUploadFuture().join();
-//                txOutputStream.getUploadFuture().join();
                 logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
             } catch (CosClientException e) {
                 e.printStackTrace();
