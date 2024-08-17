@@ -18,6 +18,12 @@ The Syncer service is designed to facilitate data synchronization from 2 sources
    - Utilizes the AWS S3 SDK to upload sequence files to Tencent Cloud Object Storage.
    - Ensures data integrity and efficient transfer through configurable batch processing.
 
+### Generating protobuf implementations
+
+```
+protoc --java_out=src/main/java proto/*.proto
+```
+
 ### Configuration
 
 The Syncer relies on a configuration file (`config.properties`) to manage settings such as BigTable connection details, local file directories, COS credentials, and processing parameters. This allows for flexible and scalable deployments.
