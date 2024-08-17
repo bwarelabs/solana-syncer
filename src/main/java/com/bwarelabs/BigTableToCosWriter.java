@@ -6,6 +6,9 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
+import org.apache.hadoop.hbase.CellBuilder;
+import org.apache.hadoop.hbase.CellBuilderType;
+import org.apache.hadoop.hbase.CellBuilderFactory;
 import org.slf4j.LoggerFactory;
 import com.qcloud.cos.exception.*;
 
@@ -16,6 +19,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.stub.metrics.NoopMetricsProvider;
@@ -38,7 +42,11 @@ import com.github.luben.zstd.ZstdInputStream;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
 
-import com.google.cloud.bigtable.data.v2.stub.metrics.NoopMetricsProvider;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.util.Bytes;
+import com.google.cloud.bigtable.hbase.util.TimestampConverter;
 
 public class BigTableToCosWriter {
     private static final Logger logger = Logger.getLogger(BigTableToCosWriter.class.getName());
@@ -168,18 +176,20 @@ public class BigTableToCosWriter {
         logger.info(String.format("Thread %s starting task for table %s, range %s - %s", threadId, tableName,
                 currentStartRow, endRowKey));
 
-//        if (currentStartRow.compareTo(endRowKey) >= 0) {
-//            logger.info(String.format("Invalid range %s - %s", currentStartRow, endRowKey));
-//            return;
-//        }
+        // if (currentStartRow.compareTo(endRowKey) >= 0) {
+        // logger.info(String.format("Invalid range %s - %s", currentStartRow,
+        // endRowKey));
+        // return;
+        // }
 
         try {
             fetchBatch(tableName, currentStartRow, endRowKey, 0);
-//            if (currentEndRow == null) {
-//                // empty batch, we're done
-//                logger.info(String.format("Empty batch for %s - %s", currentStartRow, currentEndRow));
-//                return;
-//            }
+            // if (currentEndRow == null) {
+            // // empty batch, we're done
+            // logger.info(String.format("Empty batch for %s - %s", currentStartRow,
+            // currentEndRow));
+            // return;
+            // }
 
             logger.info(String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, endRowKey));
             updateUploadedRanges(currentStartRow, endRowKey, tableName);
@@ -189,6 +199,20 @@ public class BigTableToCosWriter {
                     e);
             e.printStackTrace();
         }
+    }
+
+    private static Result createResult(byte[] rowKey, String family, String qualifier, long timestamp, byte[] value) {
+        CellBuilder cellBuilder = CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY);
+        Cell cell = cellBuilder
+                .setRow(rowKey)
+                .setFamily(Bytes.toBytes(family))
+                .setQualifier(Bytes.toBytes(qualifier))
+                .setTimestamp(timestamp)
+                .setType(Cell.Type.Put)
+                .setValue(value)
+                .build();
+
+        return Result.create(Arrays.asList(cell));
     }
 
     private void fetchBatch(String tableName, String startRowKey, String endRowKey, int retryCount)
@@ -209,16 +233,14 @@ public class BigTableToCosWriter {
 
         try (CustomS3FSDataOutputStream blocksOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
                 CustomSequenceFileWriter blocksCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
-                        blocksOutputStream)
-
-//                CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey,
-//                        endRowKey);
-//                CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
-//                        txByAddrOutputStream);
-//
-//                CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx", startRowKey, endRowKey);
-//                CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)
-            ) {
+                        blocksOutputStream);
+                CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey,
+                        endRowKey);
+                CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
+                        txByAddrOutputStream);
+                CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx",
+                        startRowKey, endRowKey);
+                CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)) {
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
@@ -230,10 +252,26 @@ public class BigTableToCosWriter {
                     rows++;
                     ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
 
+                    BigtableBlock block = new BigtableBlock(row);
+                    block.process();
+                    long hbaseTimestamp = TimestampConverter.bigtable2hbase(row.getCells().get(0).getTimestamp());
+                    for (BigtableCell cell : block.txs) {
+                        ImmutableBytesWritable txRowKey = new ImmutableBytesWritable(cell.key().getBytes());
+                        Result txResult = createResult(cell.key().getBytes(), "x", "bin", hbaseTimestamp, cell.value());
+                        txCustomWriter.append(txRowKey, txResult);
+                    }
+                    for (BigtableCell cell : block.txByAddrs) {
+                        ImmutableBytesWritable txByAddrRowKey = new ImmutableBytesWritable(cell.key().getBytes());
+                        Result txByAddrResult = createResult(cell.key().getBytes(), "x", "proto", hbaseTimestamp,
+                                cell.value());
+                        txByAddrCustomWriter.append(txByAddrRowKey, txByAddrResult);
+                    }
                     blocksCustomWriter.append(rowKey, row);
                 }
             } catch (Exception e) {
-                logger.severe(String.format("Error fetching batch for %s - %s, thrown inside of for loop", startRowKey, endRowKey));
+                logger.severe(String.format("Error fetching batch for %s - %s, thrown inside of for loop", startRowKey,
+                        endRowKey));
+                e.printStackTrace();
                 if (!blocksOutputStream.isControlledClose()) {
                     throw e;
                 }
@@ -242,12 +280,16 @@ public class BigTableToCosWriter {
             }
 
             blocksCustomWriter.close();
+            txCustomWriter.close();
+            txByAddrCustomWriter.close();
 
             logger.info(
                     String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             try {
                 blocksOutputStream.getUploadFuture().join();
+                txOutputStream.getUploadFuture().join();
+                txByAddrOutputStream.getUploadFuture().join();
                 logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
             } catch (CosClientException e) {
                 e.printStackTrace();
@@ -317,7 +359,7 @@ public class BigTableToCosWriter {
         try {
             List<String> lines = CosUtils.loadUploadedRangesFromCos(tableName);
             uploadedRanges.addAll(lines);
-        } catch (IOException e) {
+        } catch (Exception e) {
             logger.severe("Error loading checkpoints for table " + tableName);
             e.printStackTrace();
         }
@@ -327,7 +369,8 @@ public class BigTableToCosWriter {
         BigInteger start = new BigInteger(startKey, 16);
         BigInteger end = new BigInteger(lastKey, 16);
 
-        // Align start down to the nearest subrange in order to get multiples of subrange size
+        // Align start down to the nearest subrange in order to get multiples of
+        // subrange size
         start = start.divide(BigInteger.valueOf(this.SUBRANGE_SIZE)).multiply(BigInteger.valueOf(this.SUBRANGE_SIZE));
 
         BigInteger totalRange = end.subtract(start).add(BigInteger.ONE);
