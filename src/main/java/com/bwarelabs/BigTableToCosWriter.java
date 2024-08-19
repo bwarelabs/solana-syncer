@@ -207,12 +207,6 @@ public class BigTableToCosWriter {
             throw new IOException("Failed to fetch batch after 2 retries");
         }
 
-        if (tableName.equals("blocks") || tableName.equals("entries")) {
-            BigInteger nonFormattedEndRowKey = new BigInteger(startRowKey, 16)
-                    .add(BigInteger.valueOf(this.SUBRANGE_SIZE)).subtract(BigInteger.ONE);
-            endRowKey = this.formatHex(nonFormattedEndRowKey);
-        }
-
         Configuration hadoopConfig = new Configuration();
         hadoopConfig.setStrings("io.serializations", ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
