@@ -290,6 +290,10 @@ public class CosUtils {
                     String checkpointKey = objectSummary.getKey();
                     String fileName = checkpointKey.substring(checkpointKey.lastIndexOf('/') + 1);
 
+                    if (checkpointKey.contains("/failed/")) {
+                        continue;
+                    }
+
                     if (fileName.endsWith(".txt")) {
                         String range = fileName.replace(".txt", "");
                         uploadedRanges.add(range);

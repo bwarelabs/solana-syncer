@@ -157,33 +157,22 @@ public class BigTableToCosWriter {
         return executorService.submit(() -> startFetchBatch(tableName, startRowKey, endRowKey));
     }
 
-    private void startFetchBatch(String tableName, String currentStartRow, String endRowKey) {
+    private void startFetchBatch(String tableName, String startRowKey, String endRowKey) {
         long threadId = Thread.currentThread().getId();
         logger.info(String.format("Thread %s starting task for table %s, range %s - %s", threadId, tableName,
-                currentStartRow, endRowKey));
-
-        // if (currentStartRow.compareTo(endRowKey) >= 0) {
-        // logger.info(String.format("Invalid range %s - %s", currentStartRow,
-        // endRowKey));
-        // return;
-        // }
+                startRowKey, endRowKey));
 
         try {
-            fetchBatch(tableName, currentStartRow, endRowKey, 0);
-            // if (currentEndRow == null) {
-            // // empty batch, we're done
-            // logger.info(String.format("Empty batch for %s - %s", currentStartRow,
-            // currentEndRow));
-            // return;
-            // }
+            fetchBatch(tableName, startRowKey, endRowKey, 0);
 
-            logger.info(String.format("[%s] - Processed batch %s - %s", threadId, currentStartRow, endRowKey));
-            updateUploadedRanges(currentStartRow, endRowKey, tableName);
+            logger.info(String.format("[%s] - Processed batch %s - %s", threadId, startRowKey, endRowKey));
+            updateUploadedRanges(startRowKey, endRowKey, tableName);
         } catch (Exception e) {
             logger.log(Level.SEVERE,
-                    String.format("Error processing range %s - %s in table %s", currentStartRow, endRowKey, tableName),
+                    String.format("Error processing range %s - %s in table %s", startRowKey, endRowKey, tableName),
                     e);
             e.printStackTrace();
+            CosUtils.saveFailedRangesToCos(tableName, startRowKey, endRowKey);
         }
     }
 
@@ -249,14 +238,16 @@ public class BigTableToCosWriter {
                     blocksCustomWriter.append(rowKey, row);
                 }
             } catch (Exception e) {
-                logger.severe(String.format("Error fetching batch for %s - %s, thrown inside of for loop", startRowKey,
-                        endRowKey));
-                e.printStackTrace();
-                if (!blocksOutputStream.isControlledClose()) {
-                    throw e;
+                if (blocksOutputStream.isControlledClose() || txOutputStream.isControlledClose()
+                        || txByAddrOutputStream.isControlledClose()) {
+                    logger.info("Controlled close exception");
+                    logger.info("blocksOutputStream.isControlledClose(): " + blocksOutputStream.isControlledClose());
+                    logger.info("txOutputStream.isControlledClose(): " + txOutputStream.isControlledClose());
+                    logger.info("txByAddrOutputStream.isControlledClose(): " + txByAddrOutputStream.isControlledClose());
                 }
 
-                CosUtils.saveFailedRangesToCos(tableName, startRowKey, endRowKey);
+                e.printStackTrace();
+                throw e;
             }
 
             blocksCustomWriter.close();
@@ -266,15 +257,14 @@ public class BigTableToCosWriter {
             logger.info(
                     String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
-            try {
-                blocksOutputStream.getUploadFuture().join();
-                txOutputStream.getUploadFuture().join();
-                txByAddrOutputStream.getUploadFuture().join();
-                logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
-            } catch (CosClientException e) {
-                e.printStackTrace();
-                fetchBatch(tableName, startRowKey, endRowKey, retryCount + 1);
-            }
+            blocksOutputStream.getUploadFuture().join();
+            txOutputStream.getUploadFuture().join();
+            txByAddrOutputStream.getUploadFuture().join();
+            logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
+        } catch (Exception e) {
+            e.printStackTrace();
+            logger.severe(String.format("Error fetching batch for %s - %s. Retrying...", startRowKey, endRowKey));
+            fetchBatch(tableName, startRowKey, endRowKey, retryCount + 1);
         }
     }
 
