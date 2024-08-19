@@ -119,7 +119,7 @@ public class CosUtils {
     }
 
     static ExecutorService createUploadExecutorService() {
-        return Executors.newFixedThreadPool(THREAD_COUNT);
+        return Executors.newFixedThreadPool(3 * THREAD_COUNT);
     }
 
     public static final COSClient cosClient = createCOSClient();
