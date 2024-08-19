@@ -1,52 +1,26 @@
 package com.bwarelabs;
 
-/*
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.core.async.AsyncRequestBody;
-import software.amazon.awssdk.core.async.BlockingInputStreamAsyncRequestBody;
-import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.services.s3.S3AsyncClient;
-import software.amazon.awssdk.transfer.s3.S3TransferManager;
-import software.amazon.awssdk.transfer.s3.model.CompletedUpload;
-import software.amazon.awssdk.transfer.s3.model.Upload;
-import software.amazon.awssdk.transfer.s3.model.UploadRequest;
-import software.amazon.awssdk.transfer.s3.progress.LoggingTransferListener;
-import software.amazon.awssdk.services.s3.model.PutObjectRequest;
-*/
 import com.qcloud.cos.COSClient;
-import com.qcloud.cos.COSEncryptionClient;
 import com.qcloud.cos.ClientConfig;
 import com.qcloud.cos.auth.*;
 import com.qcloud.cos.exception.*;
 import com.qcloud.cos.model.*;
 import com.qcloud.cos.internal.SkipMd5CheckStrategy;
-import com.qcloud.cos.internal.crypto.*;
 import com.qcloud.cos.region.Region;
-import com.qcloud.cos.http.HttpMethodName;
+
+import java.io.*;
+import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Arrays;
-import com.qcloud.cos.utils.DateUtils;
-import com.qcloud.cos.transfer.*;
-import com.qcloud.cos.model.lifecycle.*;
-import com.qcloud.cos.model.inventory.*;
-import com.qcloud.cos.model.inventory.InventoryFrequency;
-import org.apache.hadoop.hbase.io.ByteArrayOutputStream;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.net.URI;
-import java.time.Duration;
+import com.qcloud.cos.transfer.*;
+
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 import java.util.logging.Logger;
-import java.io.IOException;
-import java.io.FileInputStream;
 
 public class CosUtils {
     private static final Logger logger = Logger.getLogger(CosUtils.class.getName());
@@ -56,7 +30,8 @@ public class CosUtils {
     private static final String REGION;
     private static final String AWS_ID_KEY;
     private static final String AWS_SECRET_KEY;
-    private static final int BUFFER_SIZE = 15 * 1024 * 1024; // 15MB
+    private static final String SYNC_TYPE; 
+    private static final int BUFFER_SIZE = 60 * 1024 * 1024; // 60MB
 
     private static final int MAX_RETRIES = 2;
     private static final int SOCKET_TIMEOUT;
@@ -139,96 +114,19 @@ public class CosUtils {
         CONNECTION_TIMEOUT = Integer
                 .parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
         THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
+        SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
         System.setProperty(SkipMd5CheckStrategy.DISABLE_PUT_OBJECT_MD5_VALIDATION_PROPERTY, "true");
     }
 
     static ExecutorService createUploadExecutorService() {
-        return Executors.newFixedThreadPool(THREAD_COUNT);
+        return Executors.newFixedThreadPool(3 * THREAD_COUNT);
     }
 
     public static final COSClient cosClient = createCOSClient();
-    public static final TransferManager transferManager = createTransferManager(cosClient);
-    private static final ExecutorService uploadExecutorService = createUploadExecutorService();
-
-    /*
-     * private static final S3AsyncClient s3AsyncClient = S3AsyncClient.crtBuilder()
-     * .endpointOverride(URI.create(COS_ENDPOINT))
-     * .region(Region.of(REGION))
-     * .credentialsProvider(
-     * StaticCredentialsProvider.create(AwsBasicCredentials.create(AWS_ID_KEY,
-     * AWS_SECRET_KEY)))
-     * .forcePathStyle(COS_ENDPOINT.contains("http://localhost:9000"))
-     * .build();
-     *
-     * private static final S3TransferManager transferManager =
-     * S3TransferManager.builder()
-     * .s3Client(s3AsyncClient)
-     * .build();
-     */
-
-    /*
-     * public static CompletableFuture<CompletedUpload> uploadToCos(String key,
-     * InputStream inputStream) {
-     * if (key == null || key.trim().isEmpty()) {
-     * logger.severe("Key cannot be null or empty");
-     * throw new IllegalArgumentException("Key cannot be null or empty");
-     * }
-     * if (inputStream == null) {
-     * logger.severe("Input stream cannot be null");
-     * throw new IllegalArgumentException("Input stream cannot be null");
-     * }
-     *
-     * try {
-     * PutObjectRequest putObjectRequest = PutObjectRequest.builder()
-     * .bucket(BUCKET_NAME)
-     * .key(key)
-     * .build();
-     *
-     * // BlockingInputStreamAsyncRequestBody body =
-     * // AsyncRequestBody.forBlockingInputStream(null); // 'null' indicates a
-     * stream
-     * // will be provided later.
-     * BlockingInputStreamAsyncRequestBody body =
-     * BlockingInputStreamAsyncRequestBody.builder().contentLength(null)
-     * .subscribeTimeout(Duration.ofSeconds(120)).build();
-     *
-     * UploadRequest uploadRequest = UploadRequest.builder()
-     * .putObjectRequest(putObjectRequest)
-     * .requestBody(body)
-     * .addTransferListener(LoggingTransferListener.create())
-     * .build();
-     *
-     * logger.info(String.format("Starting upload for: %s", key));
-     * Upload upload = transferManager.upload(uploadRequest);
-     * logger.info(String.format("Started upload for: %s", key));
-     *
-     * body.writeInputStream(inputStream);
-     * logger.info(String.format("Wrote input stream for: %s", key));
-     *
-     * return upload.completionFuture();
-     *
-     * // CompletableFuture<Void> writeFuture = CompletableFuture.runAsync(() -> {
-     * // try {
-     * // body.writeInputStream(inputStream);
-     * // } catch (Exception e) {
-     * // throw new RuntimeException("Failed to write input stream to body", e);
-     * // }
-     * // }, executorService);
-     *
-     * // return writeFuture.thenCompose(v -> upload.completionFuture())
-     * // .exceptionally(ex -> {
-     * // throw new RuntimeException("Upload to COS failed", ex);
-     * // });
-     * } catch (Exception e) {
-     * logger.severe("Input stream cannot be null");
-     * e.printStackTrace();
-     * throw new RuntimeException("Error initiating upload to COS", e);
-     * }
-     * }
-     */
+    public static final ExecutorService uploadExecutorService = createUploadExecutorService();
 
     public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(final String key,
-            InputStream inputStream) {
+            InputStream inputStream, CustomS3FSDataOutputStream outputStream) {
         return CompletableFuture.supplyAsync(() -> {
             ObjectMetadata objectMetadata = new ObjectMetadata();
             InitiateMultipartUploadRequest initiateRequest = new InitiateMultipartUploadRequest(BUCKET_NAME, key,
@@ -236,8 +134,6 @@ public class CosUtils {
             InitiateMultipartUploadResult initiateResult = cosClient.initiateMultipartUpload(initiateRequest);
             final String uploadId = initiateResult.getUploadId();
             List<PartETag> partETags = new ArrayList<>();
-
-            List<Thread> threads = new ArrayList<>();
 
             try {
 
@@ -268,10 +164,6 @@ public class CosUtils {
                     partETags.add(partETag);
                 }
 
-                // for (PartETag partETag : partETags) {
-                // logger.info(String.format("PartETag: %s", partETag.getETag()));
-                // }
-
                 CompleteMultipartUploadRequest completeRequest = new CompleteMultipartUploadRequest(BUCKET_NAME, key,
                         uploadId, partETags);
                 return cosClient.completeMultipartUpload(completeRequest);
@@ -283,9 +175,40 @@ public class CosUtils {
                 throw new RuntimeException("Error reading from input stream", e);
             } catch (CosClientException e) {
                 logger.severe("COS Client Exception: " + e.getMessage());
-                e.printStackTrace();
                 abortMultipartUpload(key, uploadId);
-                throw e;
+
+                Throwable cause = e.getCause();
+                boolean isTimeout = false;
+
+                if (cause instanceof SocketException && cause.getMessage().contains("Connection timed out")) {
+                    logger.info("Connection timed out.");
+                    isTimeout = true;
+                } else {
+                    // this is the one who triggers
+                    while (cause != null && !isTimeout) {
+                        if (cause instanceof SocketException && cause.getMessage().contains("Connection timed out")) {
+                            logger.info("Connection timed out  from while loop.");
+                            isTimeout = true;
+                        }
+                        cause = cause.getCause();
+                    }
+                }
+
+                if (isTimeout) {
+                    outputStream.setControlledClose(true);
+                    try {
+                        outputStream.close();
+                        inputStream.close();
+                    } catch (IOException e1) {
+                        logger.severe("Error closing output stream: " + e1.getMessage());
+                        e1.printStackTrace();
+                    }
+
+                    return null;
+                } else {
+                    logger.severe("Error was not a connection timeout.");
+                    throw e;
+                }
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
@@ -293,7 +216,7 @@ public class CosUtils {
     }
 
     private static PartETag uploadPart(String key, String uploadId, int partNumber, byte[] data, int size,
-            boolean isLastPart) throws InterruptedException {
+            boolean isLastPart) throws InterruptedException, CosClientException {
         ByteArrayInputStream byteArrayInputStream = new ByteArrayInputStream(data, 0, size);
         UploadPartRequest uploadPartRequest = new UploadPartRequest()
                 .withBucketName(BUCKET_NAME)
@@ -304,24 +227,10 @@ public class CosUtils {
                 .withPartSize(size)
                 .withLastPart(isLastPart);
 
-        int attempts = 0;
-        while (true) {
-            try {
-                UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
-                if (attempts > 0) {
-                    logger.info("Successfully uploaded part number " + partNumber + " after " + attempts + " attempts");
-                }
-                return uploadPartResult.getPartETag();
-            } catch (CosClientException e) {
-                attempts++;
-                if (attempts >= MAX_RETRIES) {
-                    throw e;
-                }
-                logger.warning("Error uploading part number " + partNumber + ": " + e + ". Retrying...");
-                e.printStackTrace();
-                Thread.sleep(2000);
-            }
-        }
+
+        UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
+
+        return uploadPartResult.getPartETag();
     }
 
     private static void abortMultipartUpload(String key, String uploadId) {
@@ -329,6 +238,91 @@ public class CosUtils {
             cosClient.abortMultipartUpload(new AbortMultipartUploadRequest(BUCKET_NAME, key, uploadId));
         } catch (Exception e) {
             logger.severe("Error aborting multipart upload: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public static String getCheckpointPrefix(String tableName) {
+        return String.format("%s/checkpoints/%s", SYNC_TYPE, tableName);
+    }
+
+    public static void saveUploadedRangesToCos(String tableName, String startRowKey, String endRowKey) {
+        String rangeFileName = String.format("%s/%s_%s.txt", getCheckpointPrefix(tableName), startRowKey, endRowKey);
+        String fileContent = String.format("%s_%s\n", startRowKey, endRowKey);
+
+        try {
+            byte[] bytes = fileContent.getBytes(StandardCharsets.UTF_8);
+            ByteArrayInputStream inputStream = new ByteArrayInputStream(bytes);
+
+            ObjectMetadata metadata = new ObjectMetadata();
+            metadata.setContentLength(bytes.length);
+
+            PutObjectRequest putObjectRequest = new PutObjectRequest(BUCKET_NAME, rangeFileName, inputStream, metadata);
+            cosClient.putObject(putObjectRequest);
+
+            logger.info("Range file saved to COS for table " + tableName + ": " + rangeFileName);
+        } catch (Exception e) {
+            logger.severe("Error saving range file to COS: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public static List<String> loadUploadedRangesFromCos(String tableName) throws IOException {
+        String checkpointPrefix = getCheckpointPrefix(tableName);
+        List<String> uploadedRanges = new ArrayList<>();
+
+        try {
+            ListObjectsRequest listObjectsRequest = new ListObjectsRequest()
+                    .withBucketName(BUCKET_NAME)
+                    .withPrefix(checkpointPrefix);
+
+            ObjectListing objectListing;
+
+            do {
+                objectListing = cosClient.listObjects(listObjectsRequest);
+
+                for (COSObjectSummary objectSummary : objectListing.getObjectSummaries()) {
+                    String checkpointKey = objectSummary.getKey();
+                    String fileName = checkpointKey.substring(checkpointKey.lastIndexOf('/') + 1);
+
+                    if (fileName.endsWith(".txt")) {
+                        String range = fileName.replace(".txt", "");
+                        uploadedRanges.add(range);
+                    }
+                }
+
+                listObjectsRequest.setMarker(objectListing.getNextMarker());
+
+            } while (objectListing.isTruncated());
+
+        } catch (CosServiceException e) {
+            logger.warning("No checkpoint data found for table " + tableName);
+        } catch (Exception e) {
+            logger.severe("Error reading checkpoint data from COS: " + e.getMessage());
+            e.printStackTrace();
+            throw e;
+        }
+
+        return uploadedRanges;
+    }
+
+    public static void saveFailedRangesToCos(String tableName, String startRowKey, String endRowKey) {
+        String rangeFileName = String.format("%s/failed/%s_%s.txt", getCheckpointPrefix(tableName), startRowKey, endRowKey);
+        String fileContent = String.format("%s_%s\n", startRowKey, endRowKey);
+
+        try {
+            byte[] bytes = fileContent.getBytes(StandardCharsets.UTF_8);
+            ByteArrayInputStream inputStream = new ByteArrayInputStream(bytes);
+
+            ObjectMetadata metadata = new ObjectMetadata();
+            metadata.setContentLength(bytes.length);
+
+            PutObjectRequest putObjectRequest = new PutObjectRequest(BUCKET_NAME, rangeFileName, inputStream, metadata);
+            cosClient.putObject(putObjectRequest);
+
+            logger.info("Range file saved to COS for table " + tableName + ": " + rangeFileName);
+        } catch (Exception e) {
+            logger.severe("Error saving range file to COS: " + e.getMessage());
             e.printStackTrace();
         }
     }

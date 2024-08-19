@@ -49,26 +49,7 @@ public class CustomSequenceFileWriter implements AutoCloseable {
     }
 
     public void append(ImmutableBytesWritable key, Row value) throws IOException {
-//        if (key == null || value == null) {
-//            logger.severe("Key and value cannot be null");
-//            throw new IllegalArgumentException("Key and value cannot be null");
-//        }
-//
-//        byte[] serializedRow = serializeRow(value);
-//        if (serializedRow.length < 1 * 1024 * 1024) { // 1MB = 1024 * 1024 bytes
-//            logger.warning("Row size is less than 1MB. Size: " + serializedRow.length + " bytes");
-//            return;
-//        }
-
         append(key, rowAdapter.adaptResponse(value));
-    }
-
-    private byte[] serializeRow(Row value) throws IOException {
-        ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-        try (ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream)) {
-            objectOutputStream.writeObject(value);
-        }
-        return byteArrayOutputStream.toByteArray();
     }
 
 

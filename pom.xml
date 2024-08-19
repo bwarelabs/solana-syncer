@@ -66,6 +66,13 @@
           <artifactId>cos_api</artifactId>
           <version>5.6.28</version>
       </dependency>
+    <!-- https://mvnrepository.com/artifact/org.bitcoinj/bitcoinj-core -->
+    <dependency>
+        <groupId>org.bitcoinj</groupId>
+        <artifactId>bitcoinj-core</artifactId>
+        <version>0.16.3</version>
+    </dependency>
+
 
 <dependency>
     <groupId>com.github.luben</groupId>

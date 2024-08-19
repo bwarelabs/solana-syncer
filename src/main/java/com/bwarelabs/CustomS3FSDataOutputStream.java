@@ -20,6 +20,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private final PipedInputStream pipedInputStream;
     private final String s3Key;
     private CompletableFuture uploadFuture;
+    private boolean controlledClose = false;
 
     public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) throws IOException {
         this(new PipedOutputStream(), slotRangeDir, category, syncType);
@@ -37,7 +38,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private void initiateUpload() {
         logger.info(String.format("Initiating upload for: %s", s3Key));
         try {
-            uploadFuture = CosUtils.uploadToCos(s3Key, pipedInputStream);
+            uploadFuture = CosUtils.uploadToCos(s3Key, pipedInputStream, this);
 
             /*
             uploadFuture.exceptionally(ex -> {
@@ -65,5 +66,14 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
 
     public String getS3Key() {
         return s3Key;
+    }
+
+    public void setControlledClose(boolean controlledClose) {
+        logger.info("Setting controlledClose to: " + controlledClose);
+        this.controlledClose = controlledClose;
+    }
+
+    public boolean isControlledClose() {
+        return controlledClose;
     }
 }
