@@ -12,7 +12,7 @@ public class App {
   private static final Logger logger = Logger.getLogger(App.class.getName());
 
   public static void main(String[] args) {
-      System.setProperty("hadoop.home.dir", "/");
+    System.setProperty("hadoop.home.dir", "/");
 
     Properties properties = new Properties();
     try (InputStream input = new FileInputStream("config.properties")) { // Specify the path to the external file
@@ -24,6 +24,8 @@ public class App {
 
     String readSource = null;
     String bigtableTable = null;
+    String blocksStartKey = null;
+    String blocksLastKey = null;
     String[] validBigtableTables = {"blocks", "entries", "tx", "tx-by-addr"};
 
     for (String arg : args) {
@@ -31,6 +33,10 @@ public class App {
         readSource = arg.split("=")[1];
       } else if (readSource != null && readSource.equals("bigtable") && bigtableTable == null) {
         bigtableTable = arg;
+      } else if (arg.startsWith("blocks-start-key=")) {
+        blocksStartKey = arg.split("=")[1];
+      } else if (arg.startsWith("blocks-last-key=")) {
+        blocksLastKey = arg.split("=")[1];
       }
     }
 
@@ -44,11 +50,12 @@ public class App {
         logger.severe("Error: When 'read-source' is 'bigtable', a second argument must be provided with one of the following values: 'blocks', 'entries', 'tx', 'tx-by-addr'.");
         return;
       }
+
       logger.info("Writing SequenceFiles from Bigtable table: " + bigtableTable);
       try {
-        BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties);
+        BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties, blocksStartKey, blocksLastKey);
         bigTableToCosWriter.write(bigtableTable);
-       
+
         CosUtils.cosClient.shutdown();
         CosUtils.uploadExecutorService.shutdown();
       } catch (Exception e) {
@@ -60,7 +67,7 @@ public class App {
     }
 
     if (readSource.equals("local-files")) {
-      String storagePath = Utils.getRequiredProperty(properties,"geyser-plugin.input-directory");
+      String storagePath = Utils.getRequiredProperty(properties, "geyser-plugin.input-directory");
       logger.info("Reading data from local files from path " + storagePath);
       try {
         GeyserPluginToCosWriter.watchDirectory(Path.of(storagePath));

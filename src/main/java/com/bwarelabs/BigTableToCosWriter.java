@@ -1,7 +1,5 @@
 package com.bwarelabs;
 
-import com.google.cloud.bigtable.data.v2.models.RowCell;
-import com.google.protobuf.ByteString;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.serializer.WritableSerialization;
@@ -13,20 +11,14 @@ import org.slf4j.LoggerFactory;
 import com.qcloud.cos.exception.*;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
-import com.google.api.gax.core.FixedExecutorProvider;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
-import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.stub.metrics.NoopMetricsProvider;
-
-import solana.storage.ConfirmedBlock.ConfirmedBlockOuterClass;
-import solana.storage.ConfirmedBlock.ConfirmedBlockOuterClass.ConfirmedBlock;
-import org.bitcoinj.core.Base58;
 
 import java.io.*;
 import java.math.BigInteger;
@@ -37,13 +29,7 @@ import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.logging.Level;
 
-import com.github.luben.zstd.ZstdInputStream;
-
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.util.Bytes;
 import com.google.cloud.bigtable.hbase.util.TimestampConverter;
@@ -63,14 +49,14 @@ public class BigTableToCosWriter {
     private final BigtableDataClient dataClient;
     private final ExecutorService executorService;
 
-    public BigTableToCosWriter(Properties properties) throws IOException {
+    public BigTableToCosWriter(Properties properties, String blocksStartKey, String blocksLastKey) throws Exception {
         LogManager.getLogManager().readConfiguration(
                 BigTableToCosWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
 
         this.THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
         this.SUBRANGE_SIZE = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.subrange-size"));
-        this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
-        this.BLOCKS_START_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-start-key");
+        this.BLOCKS_START_KEY = blocksStartKey != null ? blocksStartKey : Utils.getRequiredProperty(properties, "bigtable.blocks-start-key");
+        this.BLOCKS_LAST_KEY =  blocksLastKey != null ? blocksLastKey : Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
         this.ENTRIES_START_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-start-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
         this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
