@@ -178,23 +178,28 @@ public class CosUtils {
                 abortMultipartUpload(key, uploadId);
 
                 Throwable cause = e.getCause();
-                boolean isTimeout = false;
+                boolean skipError = false;
 
                 if (cause instanceof SocketException && cause.getMessage().contains("Connection timed out")) {
                     logger.info("Connection timed out.");
-                    isTimeout = true;
+                    skipError = true;
                 } else {
                     // this is the one who triggers
-                    while (cause != null && !isTimeout) {
+                    while (cause != null && !skipError) {
                         if (cause instanceof SocketException && cause.getMessage().contains("Connection timed out")) {
                             logger.info("Connection timed out  from while loop.");
-                            isTimeout = true;
+                            skipError = true;
+                        } else if (cause instanceof CosServiceException serviceException) {
+                            if ("ServiceUnavailable".equals(serviceException.getErrorCode()) && serviceException.getStatusCode() == 503) {
+                                logger.info("Service unavailable (503) error detected.");
+                                skipError = true;
+                            }
                         }
                         cause = cause.getCause();
                     }
                 }
 
-                if (isTimeout) {
+                if (skipError) {
                     outputStream.setControlledClose(true);
                     try {
                         outputStream.close();
@@ -206,7 +211,7 @@ public class CosUtils {
 
                     return null;
                 } else {
-                    logger.severe("Error was not a connection timeout.");
+                    logger.severe("Error was not a connection timeout nor a service unavailable error.");
                     throw e;
                 }
             } catch (InterruptedException e) {
