@@ -2,14 +2,15 @@ FROM rust:1.80.1-bookworm as rust-builder
 WORKDIR /app
 COPY solana-bigtable/Cargo.lock Cargo.lock
 COPY solana-bigtable/Cargo.toml Cargo.toml
+# this is a small hack to allow building the dependencies first
+# so incremental builds are faster
 RUN mkdir src \
     && echo "// dummy file" > src/lib.rs \
     && cargo build --release
 
-RUN rm -rf src
 COPY solana-bigtable/src src
 
-RUN cargo build --release
+RUN sh -c "echo '// updated' >> src/lib.rs && cargo build --release"
 
 FROM eclipse-temurin:22
 
