@@ -53,6 +53,7 @@ public class App {
         CosUtils.uploadExecutorService.shutdown();
       } catch (Exception e) {
         logger.severe(String.format("An error occurred while writing SequenceFiles from Bigtable table: %s - %s", bigtableTable, e));
+        e.printStackTrace();
       }
       logger.info("Done!");
       return;
