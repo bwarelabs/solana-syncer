@@ -325,7 +325,7 @@ public class CosUtils {
             PutObjectRequest putObjectRequest = new PutObjectRequest(BUCKET_NAME, rangeFileName, inputStream, metadata);
             cosClient.putObject(putObjectRequest);
 
-            logger.info("Range file saved to COS for table " + tableName + ": " + rangeFileName);
+            logger.info("Failed range file saved to COS for table " + tableName + ": " + rangeFileName);
         } catch (Exception e) {
             logger.severe("Error saving range file to COS: " + e.getMessage());
             e.printStackTrace();
