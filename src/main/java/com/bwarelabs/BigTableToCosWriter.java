@@ -176,18 +176,13 @@ public class BigTableToCosWriter {
         }
     }
 
-    private static Result createResult(byte[] rowKey, String family, String qualifier, long timestamp, byte[] value) {
+    private static CellBuilder createCellBuilder(String family, String qualifier, long timestamp) {
         CellBuilder cellBuilder = CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY);
-        Cell cell = cellBuilder
-                .setRow(rowKey)
+        return cellBuilder
                 .setFamily(Bytes.toBytes(family))
                 .setQualifier(Bytes.toBytes(qualifier))
-                .setTimestamp(timestamp)
-                .setType(Cell.Type.Put)
-                .setValue(value)
-                .build();
-
-        return Result.create(Arrays.asList(cell));
+                .setTimestamp(TimestampConverter.bigtable2hbase(timestamp))
+                .setType(Cell.Type.Put);
     }
 
     private void fetchBatch(String tableName, String startRowKey, String endRowKey, int retryCount)
@@ -223,16 +218,18 @@ public class BigTableToCosWriter {
 
                     BigtableBlock block = new BigtableBlock(row);
                     block.process();
-                    long hbaseTimestamp = TimestampConverter.bigtable2hbase(row.getCells().get(0).getTimestamp());
+                    CellBuilder cellBuilder = createCellBuilder("x", "bin", row.getCells().get(0).getTimestamp());
                     for (BigtableCell cell : block.txs) {
                         ImmutableBytesWritable txRowKey = new ImmutableBytesWritable(cell.key().getBytes());
-                        Result txResult = createResult(cell.key().getBytes(), "x", "bin", hbaseTimestamp, cell.value());
+                        Cell[] cells = { cellBuilder.setRow(cell.key().getBytes()).setValue(cell.value()).build() };
+                        Result txResult = Result.create(cells);
                         txCustomWriter.append(txRowKey, txResult);
                     }
+                    cellBuilder = createCellBuilder("x", "proto", row.getCells().get(0).getTimestamp());
                     for (BigtableCell cell : block.txByAddrs) {
                         ImmutableBytesWritable txByAddrRowKey = new ImmutableBytesWritable(cell.key().getBytes());
-                        Result txByAddrResult = createResult(cell.key().getBytes(), "x", "proto", hbaseTimestamp,
-                                cell.value());
+                        Cell[] cells = { cellBuilder.setRow(cell.key().getBytes()).setValue(cell.value()).build() };
+                        Result txByAddrResult = Result.create(cells);
                         txByAddrCustomWriter.append(txByAddrRowKey, txByAddrResult);
                     }
                     blocksCustomWriter.append(rowKey, row);
