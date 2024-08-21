@@ -10,5 +10,5 @@ RUN mvn dependency:resolve
 
 COPY src src
 COPY config.properties config.properties
-COPY solana-tencent-test.json solana-tencent-test.json
+COPY solana-tencent-e042e478aa66.json solana-tencent-e042e478aa66.json
 RUN mvn package
