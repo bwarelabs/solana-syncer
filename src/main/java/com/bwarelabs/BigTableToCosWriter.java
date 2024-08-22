@@ -1,446 +1,359 @@
 package com.bwarelabs;
 
-import com.google.cloud.bigtable.hbase.BigtableConfiguration;
-import com.google.cloud.bigtable.hbase.BigtableOptionsFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.RawLocalFileSystem;
-import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.*;
-import org.apache.hadoop.hbase.util.Bytes;
-
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.io.serializer.WritableSerialization;
+import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
+import org.apache.hadoop.hbase.CellBuilder;
+import org.apache.hadoop.hbase.CellBuilderType;
+import org.apache.hadoop.hbase.CellBuilderFactory;
 import org.slf4j.LoggerFactory;
+import com.qcloud.cos.exception.*;
 
-import static org.apache.hadoop.hbase.util.FutureUtils.addListener;
+import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.auth.oauth2.GoogleCredentials;
+import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.models.Query;
+import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.cloud.bigtable.data.v2.models.TableId;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.cloud.bigtable.data.v2.stub.metrics.NoopMetricsProvider;
 
-import java.io.IOException;
+import java.io.*;
 import java.math.BigInteger;
-import java.nio.file.*;
+import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
-import java.util.Properties;
+import java.util.logging.Level;
+
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.util.Bytes;
+import com.google.cloud.bigtable.hbase.util.TimestampConverter;
 
 public class BigTableToCosWriter {
     private static final Logger logger = Logger.getLogger(BigTableToCosWriter.class.getName());
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(BigTableToCosWriter.class);
 
-    private final Connection connection;
-    private final ExecutorService executorService;
     private final int THREAD_COUNT;
-    private final int SUBRANGE_SIZE; // Number of rows to process in each batch within a thread range
-    private final int BATCH_LIMIT; // Limit the number of chained batches
-    private final String TX_LAST_KEY;
-    private final String TX_BY_ADDR_LAST_KEY;
+    private final int SUBRANGE_SIZE;
     private final String BLOCKS_LAST_KEY;
+    private final String BLOCKS_START_KEY;
+    private final String ENTRIES_START_KEY;
     private final String ENTRIES_LAST_KEY;
-    private final List<CompletableFuture<Void>> allUploadFutures = new ArrayList<>();
-    private final Map<Integer, String> checkpoints = new HashMap<>();
-    private final AtomicReference<CompletableFuture<AsyncConnection>> future = new AtomicReference<>();
-    private final AtomicBoolean isClosed = new AtomicBoolean(false);
-    private final Configuration configuration;
-    private final String syncType = "initial_sync";
+    private final String SYNC_TYPE;
+    private final List<String> uploadedRanges = new ArrayList<>();
+    private final BigtableDataClient dataClient;
+    private final ExecutorService executorService;
 
-    private final char[] CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".toCharArray();
-
-    public BigTableToCosWriter(Properties properties) throws IOException {
+    public BigTableToCosWriter(Properties properties, String blocksStartKey, String blocksLastKey) throws Exception {
         LogManager.getLogManager().readConfiguration(
                 BigTableToCosWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
 
         this.THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
         this.SUBRANGE_SIZE = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.subrange-size"));
-        this.BATCH_LIMIT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.batch-limit"));
-        this.TX_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-last-key");
-        this.TX_BY_ADDR_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.tx-by-addr-last-key");
-        this.BLOCKS_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
+        this.BLOCKS_START_KEY = blocksStartKey != null ? blocksStartKey : Utils.getRequiredProperty(properties, "bigtable.blocks-start-key");
+        this.BLOCKS_LAST_KEY =  blocksLastKey != null ? blocksLastKey : Utils.getRequiredProperty(properties, "bigtable.blocks-last-key");
+        this.ENTRIES_START_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-start-key");
         this.ENTRIES_LAST_KEY = Utils.getRequiredProperty(properties, "bigtable.entries-last-key");
+        this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
 
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
         String pathToCredentials = Utils.getRequiredProperty(properties, "bigtable.credentials");
+        // Load credentials from JSON key file
+        GoogleCredentials credentials = GoogleCredentials.fromStream(new FileInputStream(pathToCredentials));
 
-        this.configuration = BigtableConfiguration.configure(projectId, instanceId);
-        this.configuration.set(BigtableOptionsFactory.BIGTABLE_SERVICE_ACCOUNT_JSON_KEYFILE_LOCATION_KEY,
-                pathToCredentials);
+        BigtableDataSettings.Builder settingsBuilder = BigtableDataSettings.newBuilder().setProjectId(projectId)
+                .setInstanceId(instanceId).setAppProfileId("default")
+                .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
+                .setMetricsProvider(NoopMetricsProvider.INSTANCE).setRefreshingChannel(false);
 
-        connection = BigtableConfiguration.connect(configuration);
+        settingsBuilder.stubSettings().setMetricsProvider(NoopMetricsProvider.INSTANCE);
+
+        dataClient = BigtableDataClient.create(settingsBuilder.build());
+
         executorService = Executors.newFixedThreadPool(this.THREAD_COUNT);
-        loadCheckpoints();
     }
 
     public void write(String tableName) throws Exception {
         logger.info("Starting BigTable to COS writer");
+        loadUploadedRanges(tableName);
+
+        for (String range : uploadedRanges) {
+            logger.info("Already uploaded range: " + range);
+        }
 
         if (tableName == null || tableName.trim().isEmpty()) {
             logger.severe("Table name cannot be null or empty");
             return;
         }
 
+        List<Future<?>> tasks;
         if (tableName.equals("blocks") || tableName.equals("entries")) {
-            writeBlocksOrEntries(tableName);
-        } else if (tableName.equals("tx") || tableName.equals("tx-by-addr")) {
-            writeTx(tableName);
+            tasks = writeBlocksOrEntries(tableName);
         } else {
             logger.severe("Invalid table name: " + tableName);
+            tasks = new ArrayList<>();
         }
 
+        for (Future<?> task : tasks) {
+            task.get();
+
+        }
+
+        logger.info(String.format("Table '%s' processed and uploaded.", tableName));
+
+        dataClient.close();
+        executorService.shutdown();
         logger.info("BigTable to COS writer completed");
-        connection.close();
-        closeConnections();
-        shutdownExecutorService();
     }
 
-    private void writeBlocksOrEntries(String table) throws Exception {
+    private void logForkJoinPoolStatus(ForkJoinPool pool) {
+        logger.info("ForkJoinPool status:");
+        logger.info("Parallelism: " + pool.getParallelism());
+        logger.info("Pool size: " + pool.getPoolSize());
+        logger.info("Active thread count: " + pool.getActiveThreadCount());
+        logger.info("Running thread count: " + pool.getRunningThreadCount());
+        logger.info("Queued task count: " + pool.getQueuedTaskCount());
+        logger.info("Queued submission count: " + pool.getQueuedSubmissionCount());
+        logger.info("Steal count: " + pool.getStealCount());
+        logger.info("Is pool quiescent: " + pool.isQuiescent());
+        logger.info("--------------------------------");
+    }
+
+    private List<Future<?>> writeBlocksOrEntries(String table) {
         logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
 
-        List<String[]> hexRanges = this
-                .splitHexRange(table.equals("blocks") ? this.BLOCKS_LAST_KEY : this.ENTRIES_LAST_KEY);
-        if (hexRanges.size() != this.THREAD_COUNT) {
-            throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
-        }
+        String lastKey = table.equals("entries") ? this.ENTRIES_LAST_KEY : this.BLOCKS_LAST_KEY;
+        String startKey = table.equals("entries") ? this.ENTRIES_START_KEY : this.BLOCKS_START_KEY;
 
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            String[] hexRange = hexRanges.get(i);
-            String startRow = checkpoints.getOrDefault(i, hexRange[0]);
+        List<String[]> hexRanges = this.splitHexRange(startKey, lastKey);
+
+        logger.info("Thread count: " + this.THREAD_COUNT);
+
+        List<Future<?>> tasks = new ArrayList<>();
+
+        for (String[] hexRange : hexRanges) {
+            String startRow = hexRange[0];
             String endRow = hexRange[1];
 
-            boolean isCheckpointStart = checkpoints.get(i) != null;
-
-            logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
-            runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart);
-        }
-
-        CompletableFuture<Void> allUploads = CompletableFuture
-                .allOf(allUploadFutures.toArray(new CompletableFuture[0]));
-        allUploads.join();
-        logger.info(String.format("Table '%s' processed and uploaded.", table));
-    }
-
-    private void writeTx(String table) throws Exception {
-        logger.info(String.format("Starting BigTable to COS writer for table '%s'", table));
-
-        List<String[]> txRanges = this.splitRangeTx();
-        if (txRanges.size() != this.THREAD_COUNT) {
-            throw new Exception("Invalid number of thread ranges, size must be equal to THREAD_COUNT");
-        }
-
-        List<String> startingKeysForTx = new ArrayList<>();
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            String[] txRange = txRanges.get(i);
-            String txStartKey = getThreadStartingKeyForTx(table, txRange[0], txRange[1]);
-            startingKeysForTx.add(txStartKey);
-            logger.info(String.format("Range: %s - %s", txRange[0], txRange[1]));
-            logger.info("Starting key for thread " + i + " is " + txStartKey);
-        }
-
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            logger.info("Getting starting key for thread " + i);
-            String startRow = checkpoints.getOrDefault(i, startingKeysForTx.get(i));
-            if (startRow == null) {
-                logger.severe("Starting key is null for thread " + i + " skipping");
-                if (table.equals("tx-by-addr")) {
-                    // this can happen if the key distribution is not uniform, I was not able to
-                    // check this
-                    // in the prod bigtable
-                    continue;
-                } else {
-                    // this should not happen because even on local emulator, the keys are pretty
-                    // uniformly distributed
-                    throw new Exception("There should be a starting key for tx table");
-                }
-            }
-
-            boolean isCheckpointStart = checkpoints.get(i) != null;
-            String endRow;
-            if (i == this.THREAD_COUNT - 1) {
-                if (table.equals("tx")) {
-                    endRow = this.TX_LAST_KEY;
-                } else {
-                    endRow = this.TX_BY_ADDR_LAST_KEY;
-                }
-            } else {
-                endRow = startingKeysForTx.get(i + 1);
-                if (table.equals("tx-by-addr") && startingKeysForTx.get(i + 1) == null) {
-                    endRow = this.TX_BY_ADDR_LAST_KEY;
-                }
+            if (uploadedRanges.contains(startRow + "_" + endRow)) {
+                logger.info(String.format("Range %s - %s already uploaded, skipping", startRow, endRow));
+                continue;
             }
 
             logger.info(String.format("Table: %s, Range: %s - %s", table, startRow, endRow));
-            runTaskOnWorkerThread(i, table, startRow, endRow, isCheckpointStart);
+            tasks.add(runTaskOnWorkerThread(table, startRow, endRow));
         }
 
-        CompletableFuture<Void> allUploads = CompletableFuture
-                .allOf(allUploadFutures.toArray(new CompletableFuture[0]));
-        allUploads.join();
-        logger.info(String.format("Table '%s' processed and uploaded.", table));
+        return tasks;
     }
 
-    private String getThreadStartingKeyForTx(String tableName, String prefix, String maxPrefix) throws Exception {
-        if (tableName == null || prefix == null || maxPrefix == null) {
-            throw new IllegalArgumentException("Table name, prefix, and maxPrefix cannot be null");
-        }
-
-        if (!tableName.equals("tx-by-addr") && !tableName.equals("tx")) {
-            throw new IllegalArgumentException("Invalid table name: " + tableName + ". Must be 'tx' or 'tx-by-addr'");
-        }
-
-        try (Table table = connection.getTable(TableName.valueOf(tableName))) {
-            int prefixValue = prefix.charAt(0);
-            int maxPrefixValue = maxPrefix.charAt(0);
-            for (int i = prefixValue; i <= maxPrefixValue; i++) {
-                Scan scan = new Scan();
-                scan.setStartStopRowForPrefixScan(Bytes.toBytes(String.valueOf((char) i)));
-                scan.setLimit(1);
-                try (ResultScanner scanner = table.getScanner(scan)) {
-                    Result next = scanner.next();
-                    if (next != null) {
-                        return Bytes.toString(next.getRow());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            throw new Exception("Error getting starting key for thread " + prefix, e);
-        }
-        return null;
+    private Future<?> runTaskOnWorkerThread(String tableName, String startRowKey, String endRowKey) {
+        return executorService.submit(() -> startFetchBatch(tableName, startRowKey, endRowKey));
     }
 
-    private void runTaskOnWorkerThread(int threadId, String tableName, String startRowKey, String endRowKey,
-            boolean isCheckpointStart) {
-        CompletableFuture<Void> processingFuture = CompletableFuture
-                .supplyAsync(() -> splitRangeAndChainUploads(threadId, tableName, startRowKey, endRowKey,
-                        !isCheckpointStart, new BatchCounter(), new ArrayList<>())
-                        .exceptionally(e -> {
-                            logger.severe(String.format("Error processing table range for %s - %s", tableName, e));
-                            throw new RuntimeException(e);
-                        }), executorService)
-                .thenCompose(batchFuture -> batchFuture);
+    private void startFetchBatch(String tableName, String startRowKey, String endRowKey) {
+        long threadId = Thread.currentThread().getId();
+        logger.info(String.format("Thread %s starting task for table %s, range %s - %s", threadId, tableName,
+                startRowKey, endRowKey));
 
-        allUploadFutures.add(processingFuture);
-    }
-
-    private CompletableFuture<Void> splitRangeAndChainUploads(int threadId, String tableName, String currentStartRow,
-            String endRowKey, boolean includeStartRow, BatchCounter batchCounter,
-            List<CompletableFuture<Void>> batchUploadFutures) {
-        if (currentStartRow.compareTo(endRowKey) == 0) {
-            CompletableFuture<Void> allUploads = CompletableFuture
-                    .allOf(batchUploadFutures.toArray(new CompletableFuture[0]));
-
-            return allUploads.thenCompose(v -> {
-                updateCheckpoint(threadId, endRowKey, tableName);
-                return CompletableFuture.completedFuture(null);
-            });
-        }
-
-        return fetchBatch(tableName, currentStartRow, endRowKey, includeStartRow)
-                .thenCompose(batch -> {
-                    if (batch.isEmpty()) {
-                        logger.info(String.format("[%s] Empty batch for startRow: %s and endRow: %s",
-                                Thread.currentThread().getName(), currentStartRow, endRowKey));
-                        updateCheckpoint(threadId, endRowKey, tableName);
-
-                        CompletableFuture<Void> allUploads = CompletableFuture
-                                .allOf(batchUploadFutures.toArray(new CompletableFuture[0]));
-                        return allUploads.thenCompose(v -> CompletableFuture.completedFuture(null));
-                    }
-
-                    String rangeStartRow = Bytes.toString(batch.get(0).getRow());
-                    logger.info(String.format("[%s] Batch size: %s for startRow: %s and endRow: %s",
-                            Thread.currentThread().getName(), batch.size(), rangeStartRow, endRowKey));
-                    String rangEndRow = Bytes.toString(batch.get(batch.size() - 1).getRow());
-
-                    CompletableFuture<Void> uploadFuture = uploadAsync(tableName, rangeStartRow, rangEndRow, batch);
-                    batchUploadFutures.add(uploadFuture);
-
-                    if (batchCounter.incrementAndGet() >= BATCH_LIMIT) {
-                        batchCounter.reset();
-                        return CompletableFuture.allOf(batchUploadFutures.toArray(new CompletableFuture[0]))
-                                .thenCompose(v -> {
-                                    updateCheckpoint(threadId, rangEndRow, tableName);
-                                    return splitRangeAndChainUploads(threadId, tableName, rangEndRow, endRowKey, false,
-                                            batchCounter, new ArrayList<>());
-                                });
-                    }
-
-                    return splitRangeAndChainUploads(threadId, tableName, rangEndRow, endRowKey, false, batchCounter,
-                            batchUploadFutures);
-                });
-    }
-
-    private CompletableFuture<Void> uploadAsync(String tableName, String startRow, String endRow, List<Result> batch) {
-        CompletableFuture<Void> uploadFuture = CompletableFuture.completedFuture(null);
         try {
-            CustomS3FSDataOutputStream customFSDataOutputStream = convertToSeqAndStartUpload(tableName, startRow,
-                    endRow, batch);
-            logger.info(
-                    String.format("[%s] Processing batch %s - %s", Thread.currentThread().getName(), startRow, endRow));
-            uploadFuture = customFSDataOutputStream.getUploadFuture()
-                    .thenRun(() -> logger.info(String.format("[%s] Successfully uploaded %s to COS",
-                            Thread.currentThread().getName(), customFSDataOutputStream.getS3Key())));
+            fetchBatch(tableName, startRowKey, endRowKey, 0);
+
+            logger.info(String.format("[%s] - Processed batch %s - %s", threadId, startRowKey, endRowKey));
+            updateUploadedRanges(startRowKey, endRowKey, tableName);
         } catch (Exception e) {
-            logger.severe(String.format("[%s] Error converting batch to sequence file format for %s - %s in table %s",
-                    Thread.currentThread().getName(), startRow, endRow, tableName));
+            logger.log(Level.SEVERE,
+                    String.format("Error processing range %s - %s in table %s", startRowKey, endRowKey, tableName),
+                    e);
+            e.printStackTrace();
+            CosUtils.saveFailedRangesToCos(tableName, startRowKey, endRowKey);
         }
-
-        return uploadFuture;
     }
 
-    private CompletableFuture<List<Result>> fetchBatch(String tableName, String startRowKey, String endRowKey,
-            boolean includeStartRow) {
-        CompletableFuture<List<Result>> resultFuture = new CompletableFuture<>();
-
-        CompletableFuture<AsyncConnection> future = getConn();
-        addListener(future, (conn, error) -> {
-            if (error != null) {
-                logger.severe(String.format("Error getting connection for %s - %s", tableName, error));
-                resultFuture.completeExceptionally(error);
-                return;
-            }
-
-            AsyncTable<?> table = conn.getTable(TableName.valueOf(tableName), executorService);
-            if (startRowKey.equals(endRowKey)) {
-                // if you call scan with the same start and end row, it will return the whole
-                // table
-                Get get = new Get(Bytes.toBytes(startRowKey));
-
-                addListener(table.get(get), (getResp, getErr) -> {
-                    if (getErr != null) {
-                        logger.severe(String.format("Error getting row %s - %s", startRowKey, getErr));
-                        resultFuture.completeExceptionally(getErr);
-                        return;
-                    }
-
-                    List<Result> batch = new ArrayList<>();
-                    if (!getResp.isEmpty()) {
-                        batch.add(getResp);
-                    }
-                    resultFuture.complete(batch);
-                });
-            } else {
-                Scan scan = new Scan()
-                        .withStartRow(Bytes.toBytes(startRowKey), includeStartRow)
-                        .withStopRow(Bytes.toBytes(endRowKey), true)
-                        .setCaching(SUBRANGE_SIZE)
-                        .setLimit(SUBRANGE_SIZE);
-
-                addListener(table.scanAll(scan), (scanResp, scanErr) -> {
-                    if (scanErr != null) {
-                        logger.severe(String.format("Error scanning table %s - %s", tableName, scanErr));
-                        resultFuture.completeExceptionally(scanErr);
-                        return;
-                    }
-
-                    List<Result> batch = new ArrayList<>(scanResp);
-                    resultFuture.complete(batch);
-                });
-            }
-        });
-
-        return resultFuture;
+    private static CellBuilder createCellBuilder(String family, String qualifier, long timestamp) {
+        CellBuilder cellBuilder = CellBuilderFactory.create(CellBuilderType.SHALLOW_COPY);
+        return cellBuilder
+                .setFamily(Bytes.toBytes(family))
+                .setQualifier(Bytes.toBytes(qualifier))
+                .setTimestamp(TimestampConverter.bigtable2hbase(timestamp))
+                .setType(Cell.Type.Put);
     }
 
-    private CustomS3FSDataOutputStream convertToSeqAndStartUpload(String tableName, String startRowKey,
-            String endRowKey, List<Result> batch) throws IOException {
-        logger.info(String.format("[%s] Converting batch to sequence file format for %s from %s to %s",
-                Thread.currentThread().getName(), tableName, startRowKey, endRowKey));
+    private void fetchBatch(String tableName, String startRowKey, String endRowKey, int retryCount)
+            throws IOException {
+        if (retryCount > 1) {
+            throw new IOException("Failed to fetch batch after 2 retries");
+        }
 
         Configuration hadoopConfig = new Configuration();
-        hadoopConfig.setStrings(
-                "io.serializations",
-                ResultSerialization.class.getName(),
+        hadoopConfig.setStrings("io.serializations", ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
-        RawLocalFileSystem fs = new RawLocalFileSystem();
-        fs.setConf(hadoopConfig);
+        try (CustomS3FSDataOutputStream blocksOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
+                CustomSequenceFileWriter blocksCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
+                        blocksOutputStream);
+                CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey,
+                        endRowKey);
+                CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
+                        txByAddrOutputStream);
+                CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx",
+                        startRowKey, endRowKey);
+                CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)) {
+            logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
+            ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
+            Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
+
+            int rows = 0;
+
+            try {
+                for (Row row : dataClient.readRows(query)) {
+                    rows++;
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+
+                    BigtableBlock block = new BigtableBlock(row);
+                    block.process();
+                    CellBuilder cellBuilder = createCellBuilder("x", "bin", row.getCells().get(0).getTimestamp());
+                    for (BigtableCell cell : block.txs) {
+                        ImmutableBytesWritable txRowKey = new ImmutableBytesWritable(cell.key().getBytes());
+                        Cell[] cells = { cellBuilder.setRow(cell.key().getBytes()).setValue(cell.value()).build() };
+                        Result txResult = Result.create(cells);
+                        txCustomWriter.append(txRowKey, txResult);
+                    }
+                    cellBuilder = createCellBuilder("x", "proto", row.getCells().get(0).getTimestamp());
+                    for (BigtableCell cell : block.txByAddrs) {
+                        ImmutableBytesWritable txByAddrRowKey = new ImmutableBytesWritable(cell.key().getBytes());
+                        Cell[] cells = { cellBuilder.setRow(cell.key().getBytes()).setValue(cell.value()).build() };
+                        Result txByAddrResult = Result.create(cells);
+                        txByAddrCustomWriter.append(txByAddrRowKey, txByAddrResult);
+                    }
+                    blocksCustomWriter.append(rowKey, row);
+                }
+            } catch (Exception e) {
+                if (blocksOutputStream.isControlledClose() || txOutputStream.isControlledClose()
+                        || txByAddrOutputStream.isControlledClose()) {
+                    logger.info("Controlled close exception");
+                    logger.info("blocksOutputStream.isControlledClose(): " + blocksOutputStream.isControlledClose());
+                    logger.info("txOutputStream.isControlledClose(): " + txOutputStream.isControlledClose());
+                    logger.info("txByAddrOutputStream.isControlledClose(): " + txByAddrOutputStream.isControlledClose());
+                }
+
+                e.printStackTrace();
+                throw e;
+            }
+
+            blocksCustomWriter.close();
+            txCustomWriter.close();
+            txByAddrCustomWriter.close();
+
+            logger.info(
+                    String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
+
+            blocksOutputStream.getUploadFuture().join();
+            txOutputStream.getUploadFuture().join();
+            txByAddrOutputStream.getUploadFuture().join();
+            logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
+        } catch (Exception e) {
+            e.printStackTrace();
+            logger.severe(String.format("Error fetching batch for %s - %s. Retrying...", startRowKey, endRowKey));
+            fetchBatch(tableName, startRowKey, endRowKey, retryCount + 1);
+        }
+    }
+
+    private void fetchAndWriteData(CustomSequenceFileWriter writer, TableId table, Set<String> keys) {
+
+        try {
+            logger.info("fetching data for " + keys.size() + " keys");
+            int nKeys = 0;
+            Query query = Query.create(table);
+            for (String key : keys) {
+                if (nKeys < 1000) {
+                    query = query.rowKey(key);
+                    nKeys++;
+                    continue;
+                }
+
+                for (Row row : dataClient.readRows(query)) {
+                    ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
+                    writer.append(rowKey, row);
+                }
+                nKeys = 0;
+                query = Query.create(table);
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private CustomS3FSDataOutputStream getS3OutputStream(String tableName, String startRowKey, String endRowKey)
+            throws IOException {
+        logger.info(String.format("Converting batch to sequence file format for %s from %s to %s", tableName,
+                startRowKey, endRowKey));
 
         if (tableName.equals("tx-by-addr")) {
             startRowKey = startRowKey.replace("/", "_");
             endRowKey = endRowKey.replace("/", "_");
         }
 
-        CustomS3FSDataOutputStream customFSDataOutputStream = new CustomS3FSDataOutputStream(
-                Paths.get("output/sequencefile/" + tableName + "/range_" + startRowKey + "_" + endRowKey), tableName, this.syncType);
-        CustomSequenceFileWriter customWriter = null;
-
-        try {
-            customWriter = new CustomSequenceFileWriter(hadoopConfig, customFSDataOutputStream);
-
-            for (Result result : batch) {
-                ImmutableBytesWritable rowKey = new ImmutableBytesWritable(result.getRow());
-                customWriter.append(rowKey, result);
-            }
-        } finally {
-            if (customWriter != null) {
-                logger.info(String.format("[%s] Closing sequence file writer for %s from %s to %s",
-                        Thread.currentThread().getName(), tableName, startRowKey, endRowKey));
-                customWriter.close();
-            }
-        }
-
-        return customFSDataOutputStream;
+        return new CustomS3FSDataOutputStream(
+                Paths.get("output/sequencefile/" + tableName + "/range_" + startRowKey + "_" + endRowKey), tableName,
+                SYNC_TYPE);
     }
 
-    private void updateCheckpoint(int threadId, String endRowKey, String tableName) {
-        checkpoints.put(threadId, endRowKey);
-        saveCheckpoint(threadId, endRowKey, tableName);
+    private void updateUploadedRanges(String startRowKey, String endRowKey, String tableName) {
+        uploadedRanges.add(String.format("%s_%s", startRowKey, endRowKey));
+        saveUploadedRanges(startRowKey, endRowKey, tableName);
     }
 
-    private void saveCheckpoint(int threadId, String endRowKey, String tableName) {
+    private void saveUploadedRanges(String startRowKey, String endRowKey, String tableName) {
         try {
-            Path tableDir = Paths.get(tableName);
-            if (!Files.exists(tableDir)) {
-                Files.createDirectories(tableDir);
-            }
-            Path checkpointFile = tableDir.resolve("checkpoint_" + threadId + ".txt");
-            Files.write(checkpointFile, endRowKey.getBytes(), StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING);
+            CosUtils.saveUploadedRangesToCos(tableName, startRowKey, endRowKey);
         } catch (Exception e) {
-            logger.severe(String.format("Error saving checkpoint for thread %s - %s", threadId, e));
+            logger.severe(String.format("Error saving checkpoint for table %s with range %s - %s", tableName,
+                    startRowKey, endRowKey));
+            e.printStackTrace();
+            throw e;
         }
     }
 
-    private void loadCheckpoints() {
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            Path checkpointPath = Paths.get("checkpoint_" + i + ".txt");
-            if (Files.exists(checkpointPath)) {
-                try {
-                    String checkpoint = new String(Files.readAllBytes(checkpointPath));
-                    checkpoints.put(i, checkpoint);
-                } catch (Exception e) {
-                    logger.severe(String.format("Error loading checkpoint for thread %s - %s", i, e));
-                }
-            }
+    private void loadUploadedRanges(String tableName) {
+        try {
+            List<String> lines = CosUtils.loadUploadedRangesFromCos(tableName);
+            uploadedRanges.addAll(lines);
+        } catch (Exception e) {
+            logger.severe("Error loading checkpoints for table " + tableName);
+            e.printStackTrace();
         }
     }
 
-    public List<String[]> splitHexRange(String lastKey) {
-        BigInteger start = new BigInteger("0000000000000000", 16);
+    public List<String[]> splitHexRange(String startKey, String lastKey) {
+        BigInteger start = new BigInteger(startKey, 16);
         BigInteger end = new BigInteger(lastKey, 16);
 
-        BigInteger totalRange = end.subtract(start).add(BigInteger.ONE); // +1 to include the end in the range
-        BigInteger intervalSize = totalRange.divide(BigInteger.valueOf(this.THREAD_COUNT));
-        BigInteger remainder = totalRange.mod(BigInteger.valueOf(this.THREAD_COUNT));
+        // Align start down to the nearest subrange in order to get multiples of
+        // subrange size
+        start = start.divide(BigInteger.valueOf(this.SUBRANGE_SIZE)).multiply(BigInteger.valueOf(this.SUBRANGE_SIZE));
+
+        BigInteger totalRange = end.subtract(start).add(BigInteger.ONE);
+        BigInteger numberOfSubranges = totalRange.divide(BigInteger.valueOf(this.SUBRANGE_SIZE));
+
+        if (totalRange.mod(BigInteger.valueOf(this.SUBRANGE_SIZE)).compareTo(BigInteger.ZERO) > 0) {
+            numberOfSubranges = numberOfSubranges.add(BigInteger.ONE);
+        }
 
         List<String[]> intervals = new ArrayList<>();
         BigInteger currentStart = start;
 
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            BigInteger currentEnd = currentStart.add(intervalSize).subtract(BigInteger.ONE);
-            if (remainder.compareTo(BigInteger.ZERO) > 0) {
-                currentEnd = currentEnd.add(BigInteger.ONE);
-                remainder = remainder.subtract(BigInteger.ONE);
-            }
-            intervals.add(new String[] {
-                    this.formatHex(currentStart),
-                    this.formatHex(currentEnd)
-            });
+        for (int i = 0; i < numberOfSubranges.intValue(); i++) {
+            BigInteger currentEnd = currentStart.add(BigInteger.valueOf(this.SUBRANGE_SIZE)).subtract(BigInteger.ONE);
+
+            intervals.add(new String[] { formatHex(currentStart), formatHex(currentEnd) });
             currentStart = currentEnd.add(BigInteger.ONE);
         }
         return intervals;
@@ -448,94 +361,5 @@ public class BigTableToCosWriter {
 
     private String formatHex(BigInteger value) {
         return String.format("%016x", value);
-    }
-
-    public List<String[]> splitRangeTx() {
-        List<String[]> intervals = new ArrayList<>();
-        int totalChars = this.CHARACTERS.length;
-        int baseIntervalSize = totalChars / this.THREAD_COUNT;
-        int remainingChars = totalChars % this.THREAD_COUNT;
-
-        int currentIndex = 0;
-        for (int i = 0; i < this.THREAD_COUNT; i++) {
-            int intervalSize = baseIntervalSize + (i < remainingChars ? 1 : 0);
-            int endIndex = currentIndex + intervalSize - 1;
-            String startKey = String.valueOf(this.CHARACTERS[currentIndex]);
-            String endKey = String.valueOf(this.CHARACTERS[endIndex]);
-            intervals.add(new String[] { startKey, endKey });
-            currentIndex = endIndex + 1;
-        }
-        return intervals;
-    }
-
-    private void closeConnections() {
-        CompletableFuture<AsyncConnection> connFuture = future.get();
-        if (connFuture != null && !isClosed.getAndSet(true)) {
-            connFuture.thenAccept(conn -> {
-                try {
-                    conn.close();
-                    logger.info("AsyncConnection closed successfully.");
-                } catch (IOException e) {
-                    logger.severe("Error closing AsyncConnection: " + e.getMessage());
-                }
-            }).exceptionally(e -> {
-                logger.severe("Error during AsyncConnection closure: " + e.getMessage());
-                return null;
-            });
-        }
-    }
-
-    private void shutdownExecutorService() {
-        executorService.shutdown();
-        try {
-            if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
-                executorService.shutdownNow();
-                if (!executorService.awaitTermination(60, TimeUnit.SECONDS))
-                    logger.severe("Executor service did not terminate");
-            }
-        } catch (InterruptedException ie) {
-            executorService.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private CompletableFuture<AsyncConnection> getConn() {
-        CompletableFuture<AsyncConnection> f = future.get();
-        if (f != null) {
-            return f;
-        }
-        for (;;) {
-            if (future.compareAndSet(null, new CompletableFuture<>())) {
-                CompletableFuture<AsyncConnection> toComplete = future.get();
-                addListener(ConnectionFactory.createAsyncConnection(this.configuration), (conn, error) -> {
-                    if (error != null) {
-                        toComplete.completeExceptionally(error);
-                        // reset the future holder so we will get a chance to recreate an async
-                        // connection at next try.
-                        future.set(null);
-                        return;
-                    }
-                    toComplete.complete(conn);
-                });
-                return toComplete;
-            } else {
-                f = future.get();
-                if (f != null) {
-                    return f;
-                }
-            }
-        }
-    }
-
-    private static class BatchCounter {
-        private int count = 0;
-
-        int incrementAndGet() {
-            return ++count;
-        }
-
-        void reset() {
-            count = 0;
-        }
     }
 }

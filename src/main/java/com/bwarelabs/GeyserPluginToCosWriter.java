@@ -5,7 +5,6 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 
@@ -102,7 +101,7 @@ public class GeyserPluginToCosWriter {
         logger.info("Processing slot range: " + slotRangeDir.getFileName());
 
         Configuration hadoopConfig = new Configuration();
-        hadoopConfig.setStrings("io.serializations", WritableSerialization.class.getName(), ResultSerialization.class.getName());
+        hadoopConfig.setStrings("io.serializations", WritableSerialization.class.getName());
 
         try (
                 CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(slotRangeDir, "entries", syncType);

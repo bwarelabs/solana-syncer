@@ -3,10 +3,15 @@ package com.bwarelabs;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.io.ByteArrayOutputStream;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.SequenceFile;
+import com.google.cloud.bigtable.data.v2.models.Row;
+import com.google.api.core.InternalApi;
+import com.google.cloud.bigtable.hbase.adapters.read.RowAdapter;
 
 import java.io.IOException;
+import java.io.ObjectOutputStream;
 import java.util.logging.Logger;
 
 public class CustomSequenceFileWriter implements AutoCloseable {
@@ -14,6 +19,7 @@ public class CustomSequenceFileWriter implements AutoCloseable {
 
     private final SequenceFile.Writer writer;
     private final FSDataOutputStream fsDataOutputStream;
+    private final RowAdapter rowAdapter = new RowAdapter();
 
     public CustomSequenceFileWriter(Configuration conf, FSDataOutputStream out) throws IOException {
         if (conf == null) {
@@ -39,7 +45,13 @@ public class CustomSequenceFileWriter implements AutoCloseable {
             throw new IllegalArgumentException("Key and value cannot be null");
         }
         this.writer.append(key, value);
+        // this.writer.flush();
     }
+
+    public void append(ImmutableBytesWritable key, Row value) throws IOException {
+        append(key, rowAdapter.adaptResponse(value));
+    }
+
 
     @Override
     public void close() throws IOException {
