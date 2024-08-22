@@ -1,57 +1,79 @@
 package com.bwarelabs;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
-import software.amazon.awssdk.transfer.s3.model.CompletedUpload;
+import org.slf4j.LoggerFactory;
+import com.qcloud.cos.model.*;
+import com.qcloud.cos.transfer.*;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 
 public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private static final Logger logger = Logger.getLogger(CustomS3FSDataOutputStream.class.getName());
+    private static final org.slf4j.Logger log = LoggerFactory.getLogger(CustomS3FSDataOutputStream.class);
 
-    private final ByteArrayOutputStream buffer;
+    private final PipedOutputStream pipedOutputStream;
+    private final PipedInputStream pipedInputStream;
     private final String s3Key;
-    private CompletableFuture<CompletedUpload> uploadFuture;
+    private CompletableFuture uploadFuture;
+    private boolean controlledClose = false;
 
-    public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) {
-        this(new ByteArrayOutputStream(), slotRangeDir, category , syncType);
+    public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) throws IOException {
+        this(new PipedOutputStream(), slotRangeDir, category, syncType);
         logger.info("CustomS3FSDataOutputStream created for key: " + s3Key);
     }
 
-    private CustomS3FSDataOutputStream(ByteArrayOutputStream buffer, Path slotRangeDir, String category, String syncType) {
-        super(buffer, null);
-        this.buffer = buffer;
-        this.s3Key = syncType + "/" + slotRangeDir.getFileName() + "/" + category + "/" + category + ".seq";
+    private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, Path slotRangeDir, String category, String syncType) throws IOException {
+        super(pipedOutputStream, null);
+        this.pipedOutputStream = pipedOutputStream;
+        this.pipedInputStream = new PipedInputStream(pipedOutputStream, 30 * 1024 * 1024);
+        this.s3Key = syncType + "/" + category + "/" + slotRangeDir.getFileName() + "/" + category + ".seq";
+        initiateUpload();
+    }
+
+    private void initiateUpload() {
+        logger.info(String.format("Initiating upload for: %s", s3Key));
+        try {
+            uploadFuture = CosUtils.uploadToCos(s3Key, pipedInputStream, this);
+
+            /*
+            uploadFuture.exceptionally(ex -> {
+                logger.severe(String.format("Failed to upload %s to S3", s3Key));
+                ex.printStackTrace();
+                return null;
+            });
+            */
+        } catch (Exception e) {
+            logger.severe(String.format("Failed to initiate upload %s to S3", s3Key));
+            e.printStackTrace();
+        }
     }
 
     @Override
     public void close() throws IOException {
         logger.info("Closing stream for: " + s3Key);
         super.close();
-        byte[] content = buffer.toByteArray();
-        logger.info("Uploading " + s3Key + " to S3 asynchronously");
-
-        try {
-            uploadFuture = CosUtils.uploadToCos(s3Key, content);
-            uploadFuture.exceptionally(ex -> {
-                logger.severe(String.format("Failed to upload %s to S3 with error %s", s3Key, ex));
-                return null;
-            });
-        } catch (Exception e) {
-            throw new IOException(String.format("Failed to upload %s to S3", s3Key), e);
-        } finally {
-            buffer.close();
-        }
+        pipedOutputStream.close();
     }
 
-    public CompletableFuture<CompletedUpload> getUploadFuture() {
+    public CompletableFuture<Void> getUploadFuture() {
         return uploadFuture;
     }
 
     public String getS3Key() {
         return s3Key;
+    }
+
+    public void setControlledClose(boolean controlledClose) {
+        logger.info("Setting controlledClose to: " + controlledClose);
+        this.controlledClose = controlledClose;
+    }
+
+    public boolean isControlledClose() {
+        return controlledClose;
     }
 }
