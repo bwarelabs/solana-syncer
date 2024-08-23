@@ -59,6 +59,7 @@ public class CustomSequenceFileWriter implements AutoCloseable {
         this.writer.close();
 
         if (fsDataOutputStream != null) {
+            logger.info("Closing FSDataOutputStream");
             fsDataOutputStream.close();
         }
     }

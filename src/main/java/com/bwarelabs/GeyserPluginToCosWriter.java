@@ -17,6 +17,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * GeyserPluginToCosWriter class is responsible for reading data from local storage, processing it,
@@ -39,58 +42,69 @@ public class GeyserPluginToCosWriter {
     private static final Logger logger = Logger.getLogger(GeyserPluginToCosWriter.class.getName());
     private static final String syncType = "live_sync";
 
+    private static final ExecutorService fixedThreadPool = Executors.newFixedThreadPool(8);
+
+
     public static void watchDirectory(Path path) {
-        logger.info("Starting watch process...");
+        logger.info("Uploading existing directories...");
+
+        Set<String> directoriesToSkip = new HashSet<>(Arrays.asList());
 
         try {
             // Process existing directories
             List<CompletableFuture<Void>> futures = Files.list(path)
                     .filter(Files::isDirectory)
-                    .map(GeyserPluginToCosWriter::processSlotRange)
+                    .filter(dir -> !directoriesToSkip.contains(dir.getFileName().toString()))
+                    .map(slotRangeDir -> CompletableFuture.supplyAsync(() -> processSlotRange(slotRangeDir), fixedThreadPool)
+                        .thenComposeAsync(f -> f, fixedThreadPool))
                     .collect(Collectors.toList());
 
             CompletableFuture<Void> initialUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
             initialUploads.thenRun(() -> logger.info("Initial slot ranges processed and uploaded."));
+            initialUploads.join();
 
-            // Start watching the directory for new subdirectories
-            try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
-                path.register(watchService, StandardWatchEventKinds.ENTRY_CREATE);
+            logger.info("Uploaded existing directories.");
+            logger.info("Starting watch process...");
 
-                logger.info("Watching directory: " + path);
+           // Start watching the directory for new subdirectories
+           try (WatchService watchService = FileSystems.getDefault().newWatchService()) {
+               path.register(watchService, StandardWatchEventKinds.ENTRY_CREATE);
 
-                while (true) {
-                    WatchKey key;
-                    key = watchService.take();
+               logger.info("Watching directory: " + path);
 
-                    for (WatchEvent<?> event : key.pollEvents()) {
-                        WatchEvent.Kind<?> kind = event.kind();
+               while (true) {
+                   WatchKey key;
+                   key = watchService.take();
 
-                        if (kind == StandardWatchEventKinds.OVERFLOW) {
-                            continue;
-                        }
+                   for (WatchEvent<?> event : key.pollEvents()) {
+                       WatchEvent.Kind<?> kind = event.kind();
 
-                        WatchEvent<Path> ev = (WatchEvent<Path>) event;
-                        Path fileName = ev.context();
-                        Path child = path.resolve(fileName);
+                       if (kind == StandardWatchEventKinds.OVERFLOW) {
+                           continue;
+                       }
 
-                        if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
-                            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> processSlotRange(child));
-                            futures.add(future);
-                        }
-                    }
+                       WatchEvent<Path> ev = (WatchEvent<Path>) event;
+                       Path fileName = ev.context();
+                       Path child = path.resolve(fileName);
 
-                    boolean valid = key.reset();
-                    if (!valid) {
-                        break;
-                    }
-                }
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
+                       if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
+                           CompletableFuture<Void> future = CompletableFuture.runAsync(() -> processSlotRange(child), fixedThreadPool);
+                           futures.add(future);
+                       }
+                   }
 
-            CompletableFuture<Void> allUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            allUploads.thenRun(() -> logger.info("All slot ranges processed and uploaded."))
-                    .join();
+                   boolean valid = key.reset();
+                   if (!valid) {
+                       break;
+                   }
+               }
+           } catch (InterruptedException e) {
+               throw new RuntimeException(e);
+           }
+
+           CompletableFuture<Void> allUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+           allUploads.thenRun(() -> logger.info("All slot ranges processed and uploaded."))
+                   .join();
 
         } catch (Exception e) {
             logger.severe(String.format("Error processing directory: %s, %s", path, e.getMessage()));
@@ -124,7 +138,9 @@ public class GeyserPluginToCosWriter {
                         try {
                             processSlot(slotDir, entriesWriter, blocksWriter, txWriter, txByAddrWriter);
                         } catch (Exception e) {
-                            logger.severe(String.format("Error processing slot: %s, %s", slotDir.getFileName(), e.getMessage()));                  }
+                            logger.severe(String.format("Error processing slot: %s, %s", slotDir.getFileName(), e.getMessage()));
+                            e.printStackTrace();
+                        }
                     });
 
             // Closing writers so the CustomS3FSDataOutputStream creates the futures
@@ -139,16 +155,17 @@ public class GeyserPluginToCosWriter {
                     txStream.getUploadFuture(),
                     txByAddrStream.getUploadFuture()
             ).thenRunAsync(() -> {
-                logger.info("Slot range processed: " + slotRangeDir.getFileName());
+                logger.info("Slot range processed: " + slotRangeDir.getFileName() + ", deleting slot range...");
                 try {
-                    deleteDirectory(slotRangeDir);
+                   deleteDirectory(slotRangeDir);
                     logger.info("Deleted slot range: " + slotRangeDir.getFileName());
                 } catch (Exception e) {
                     logger.severe(String.format("Error deleting slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
                 }
-            });
+            }, fixedThreadPool);
         } catch (Exception e) {
             logger.severe(String.format("Error processing slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
+            e.printStackTrace();
             return CompletableFuture.completedFuture(null);
         }
     }
