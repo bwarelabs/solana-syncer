@@ -124,13 +124,16 @@ public class GeyserPluginToCosWriter {
             CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(range, "blocks", syncType);
             CustomSequenceFileWriter blocksWriter = new CustomSequenceFileWriter(hadoopConfig, blocksStream);
 
+            CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(range, "entries", syncType);
+            CustomSequenceFileWriter entriesWriter = new CustomSequenceFileWriter(hadoopConfig, entriesStream);
+
             Stream<Path> slotDirs = Files.list(slotRangeDir)
         ) {
             slotDirs
                     .filter(Files::isDirectory)
                     .forEach(slotDir -> {
                         try {
-                            processSlot(slotDir, blocksWriter);
+                            processSlot(slotDir, entriesWriter, blocksWriter);
                         } catch (Exception e) {
                             logger.severe(String.format("Error processing slot: %s, %s", slotDir.getFileName(), e.getMessage()));
                             e.printStackTrace();
@@ -158,7 +161,7 @@ public class GeyserPluginToCosWriter {
         }
     }
 
-    private static void processSlot(Path slotDir, CustomSequenceFileWriter blocksWriter) throws IOException {
+    private static void processSlot(Path slotDir, CustomSequenceFileWriter entriesWriter, CustomSequenceFileWriter blocksWriter) throws IOException {
         Files.walkFileTree(slotDir, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
@@ -174,8 +177,8 @@ public class GeyserPluginToCosWriter {
                         fileName.substring(0, fileName.lastIndexOf('.')) :
                         fileName;
 
-                if (!folderName.equals("blocks")) {
-                    logger.warning("Skipping file: " + file + ". There should be no other files in the slot directory other than blocks.");
+                if (!folderName.equals("blocks") && !folderName.equals("entries")) {
+                    logger.warning("Skipping file: " + file + ". There should be no other files in the slot directory other than blocks and entries.");
                     return FileVisitResult.CONTINUE;
                 }
 
@@ -196,7 +199,18 @@ public class GeyserPluginToCosWriter {
                 );
 
                 Result result = Result.create(Collections.singletonList(cell));
-                blocksWriter.append(key, result);
+                switch (folderName) {
+                    case "blocks":
+                        blocksWriter.append(key, result);
+                        break;
+                    case "entries":
+                        entriesWriter.append(key, result);
+                        break;
+                    default:
+                        logger.warning("Skipping file: " + file + ". There should be no other files in the slot directory other than blocks and entries.");
+                        break;
+                }
+
 
                 return FileVisitResult.CONTINUE;
             }

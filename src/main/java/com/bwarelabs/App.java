@@ -15,7 +15,7 @@ public class App {
     System.setProperty("hadoop.home.dir", "/");
 
     Properties properties = new Properties();
-    try (InputStream input = new FileInputStream("config.properties")) { // Specify the path to the external file
+    try (InputStream input = new FileInputStream("config.properties")) {
       properties.load(input);
     } catch (IOException ex) {
       logger.severe("Error loading configuration file: " + ex.getMessage());
@@ -42,8 +42,6 @@ public class App {
     }
 
     if (readSource.equals("bigtable")) {
-      logger.info("Writing SequenceFiles from Bigtable tables: blocks, tx, tx-by-addr. For entries table, please use 'sync-entries' branch");
-
       try {
         BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties, blocksStartKey, blocksLastKey);
         bigTableToCosWriter.write();
@@ -51,7 +49,7 @@ public class App {
         CosUtils.cosClient.shutdown();
         CosUtils.uploadExecutorService.shutdown();
       } catch (Exception e) {
-        logger.severe(String.format("An error occurred while writing SequenceFiles from Bigtable tables: blocks, tx, tx-by-addr - %s", e));
+        logger.severe(String.format("An error occurred while migrating data from BigTable: %s", e));
         e.printStackTrace();
       }
       logger.info("Done!");

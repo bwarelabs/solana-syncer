@@ -38,9 +38,7 @@ public class CosUtils {
         // Set the user identity information.
         // Log in to the [CAM console](https://console.cloud.tencent.com/cam/capi) to
         // view and manage the `SECRETID` and `SECRETKEY` of your project.
-        String secretId = COS_ID_KEY;
-        String secretKey = COS_SECRET_KEY;
-        COSCredentials cred = new BasicCOSCredentials(secretId, secretKey);
+        COSCredentials cred = new BasicCOSCredentials(COS_ID_KEY, COS_SECRET_KEY);
 
         // `ClientConfig` contains the COS client configuration for subsequent COS
         // requests.
