@@ -70,7 +70,7 @@ public class BigTableToCosWriter {
         BigtableDataSettings.Builder settingsBuilder = BigtableDataSettings.newBuilder().setProjectId(projectId)
                 .setInstanceId(instanceId).setAppProfileId("default")
                 .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
-                .setMetricsProvider(NoopMetricsProvider.INSTANCE).setRefreshingChannel(false);
+                .setMetricsProvider(NoopMetricsProvider.INSTANCE);
 
         settingsBuilder.stubSettings().setMetricsProvider(NoopMetricsProvider.INSTANCE);
 
@@ -197,14 +197,7 @@ public class BigTableToCosWriter {
 
         try (CustomS3FSDataOutputStream blocksOutputStream = getS3OutputStream(tableName, startRowKey, endRowKey);
                 CustomSequenceFileWriter blocksCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
-                        blocksOutputStream);
-                CustomS3FSDataOutputStream txByAddrOutputStream = getS3OutputStream("tx-by-addr", startRowKey,
-                        endRowKey);
-                CustomSequenceFileWriter txByAddrCustomWriter = new CustomSequenceFileWriter(hadoopConfig,
-                        txByAddrOutputStream);
-                CustomS3FSDataOutputStream txOutputStream = getS3OutputStream("tx",
-                        startRowKey, endRowKey);
-                CustomSequenceFileWriter txCustomWriter = new CustomSequenceFileWriter(hadoopConfig, txOutputStream)) {
+                        blocksOutputStream)) {
             logger.info(String.format("Before fetch batch for %s - %s", startRowKey, endRowKey));
             ByteStringRange range = ByteStringRange.unbounded().startClosed(startRowKey).endClosed(endRowKey);
             Query query = Query.create(TableId.of(tableName)).range(range).limit(SUBRANGE_SIZE);
@@ -215,32 +208,12 @@ public class BigTableToCosWriter {
                 for (Row row : dataClient.readRows(query)) {
                     rows++;
                     ImmutableBytesWritable rowKey = new ImmutableBytesWritable(row.getKey().toByteArray());
-
-                    BigtableBlock block = new BigtableBlock(row);
-                    block.process();
-                    CellBuilder cellBuilder = createCellBuilder("x", "bin", row.getCells().get(0).getTimestamp());
-                    for (BigtableCell cell : block.txs) {
-                        ImmutableBytesWritable txRowKey = new ImmutableBytesWritable(cell.key().getBytes());
-                        Cell[] cells = { cellBuilder.setRow(cell.key().getBytes()).setValue(cell.value()).build() };
-                        Result txResult = Result.create(cells);
-                        txCustomWriter.append(txRowKey, txResult);
-                    }
-                    cellBuilder = createCellBuilder("x", "proto", row.getCells().get(0).getTimestamp());
-                    for (BigtableCell cell : block.txByAddrs) {
-                        ImmutableBytesWritable txByAddrRowKey = new ImmutableBytesWritable(cell.key().getBytes());
-                        Cell[] cells = { cellBuilder.setRow(cell.key().getBytes()).setValue(cell.value()).build() };
-                        Result txByAddrResult = Result.create(cells);
-                        txByAddrCustomWriter.append(txByAddrRowKey, txByAddrResult);
-                    }
                     blocksCustomWriter.append(rowKey, row);
                 }
             } catch (Exception e) {
-                if (blocksOutputStream.isControlledClose() || txOutputStream.isControlledClose()
-                        || txByAddrOutputStream.isControlledClose()) {
+                if (blocksOutputStream.isControlledClose()) {
                     logger.info("Controlled close exception");
                     logger.info("blocksOutputStream.isControlledClose(): " + blocksOutputStream.isControlledClose());
-                    logger.info("txOutputStream.isControlledClose(): " + txOutputStream.isControlledClose());
-                    logger.info("txByAddrOutputStream.isControlledClose(): " + txByAddrOutputStream.isControlledClose());
                 }
 
                 e.printStackTrace();
@@ -248,15 +221,11 @@ public class BigTableToCosWriter {
             }
 
             blocksCustomWriter.close();
-            txCustomWriter.close();
-            txByAddrCustomWriter.close();
 
             logger.info(
                     String.format("Finished after %d rows in fetch batch for %s - %s", rows, startRowKey, endRowKey));
 
             blocksOutputStream.getUploadFuture().join();
-            txOutputStream.getUploadFuture().join();
-            txByAddrOutputStream.getUploadFuture().join();
             logger.info(String.format("Finished upload for fetch batch for %s - %s", startRowKey, endRowKey));
         } catch (Exception e) {
             e.printStackTrace();
