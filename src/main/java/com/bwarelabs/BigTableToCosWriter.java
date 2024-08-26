@@ -4,9 +4,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
-import org.apache.hadoop.hbase.CellBuilder;
-import org.apache.hadoop.hbase.CellBuilderType;
-import org.apache.hadoop.hbase.CellBuilderFactory;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.auth.oauth2.GoogleCredentials;
@@ -25,10 +22,6 @@ import java.util.concurrent.*;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.logging.Level;
-
-import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.util.Bytes;
-import com.google.cloud.bigtable.hbase.util.TimestampConverter;
 
 public class BigTableToCosWriter {
     private static final Logger logger = Logger.getLogger(BigTableToCosWriter.class.getName());
