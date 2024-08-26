@@ -23,16 +23,12 @@ public class App {
     }
 
     String readSource = null;
-    String bigtableTable = null;
     String blocksStartKey = null;
     String blocksLastKey = null;
-    String[] validBigtableTables = {"blocks", "entries", "tx", "tx-by-addr"};
 
     for (String arg : args) {
       if (arg.startsWith("read-source=")) {
         readSource = arg.split("=")[1];
-      } else if (readSource != null && readSource.equals("bigtable") && bigtableTable == null) {
-        bigtableTable = arg;
       } else if (arg.startsWith("blocks-start-key=")) {
         blocksStartKey = arg.split("=")[1];
       } else if (arg.startsWith("blocks-last-key=")) {
@@ -46,20 +42,16 @@ public class App {
     }
 
     if (readSource.equals("bigtable")) {
-      if (bigtableTable == null || !Arrays.asList(validBigtableTables).contains(bigtableTable)) {
-        logger.severe("Error: When 'read-source' is 'bigtable', a second argument must be provided with one of the following values: 'blocks', 'entries', 'tx', 'tx-by-addr'.");
-        return;
-      }
+      logger.info("Writing SequenceFiles from Bigtable tables: blocks, tx, tx-by-addr. For entries table, please use 'sync-entries' branch");
 
-      logger.info("Writing SequenceFiles from Bigtable table: " + bigtableTable);
       try {
         BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties, blocksStartKey, blocksLastKey);
-        bigTableToCosWriter.write(bigtableTable);
+        bigTableToCosWriter.write();
 
         CosUtils.cosClient.shutdown();
         CosUtils.uploadExecutorService.shutdown();
       } catch (Exception e) {
-        logger.severe(String.format("An error occurred while writing SequenceFiles from Bigtable table: %s - %s", bigtableTable, e));
+        logger.severe(String.format("An error occurred while writing SequenceFiles from Bigtable tables: blocks, tx, tx-by-addr - %s", e));
         e.printStackTrace();
       }
       logger.info("Done!");

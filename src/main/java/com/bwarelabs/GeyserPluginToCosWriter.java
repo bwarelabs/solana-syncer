@@ -116,18 +116,19 @@ public class GeyserPluginToCosWriter {
 
         Configuration hadoopConfig = new Configuration();
         hadoopConfig.setStrings("io.serializations", WritableSerialization.class.getName());
+        String range = String.valueOf(slotRangeDir.getFileName());
 
         try (
-                CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(slotRangeDir, "entries", syncType);
+                CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(range, "entries", syncType);
                 CustomSequenceFileWriter entriesWriter = new CustomSequenceFileWriter(hadoopConfig, entriesStream);
 
-                CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(slotRangeDir, "blocks", syncType);
+                CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(range, "blocks", syncType);
                 CustomSequenceFileWriter blocksWriter = new CustomSequenceFileWriter(hadoopConfig, blocksStream);
 
-                CustomS3FSDataOutputStream txStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx", syncType);
+                CustomS3FSDataOutputStream txStream = new CustomS3FSDataOutputStream(range, "tx", syncType);
                 CustomSequenceFileWriter txWriter = new CustomSequenceFileWriter(hadoopConfig, txStream);
 
-                CustomS3FSDataOutputStream txByAddrStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx_by_addr", syncType);
+                CustomS3FSDataOutputStream txByAddrStream = new CustomS3FSDataOutputStream(range, "tx_by_addr", syncType);
                 CustomSequenceFileWriter txByAddrWriter = new CustomSequenceFileWriter(hadoopConfig, txByAddrStream);
 
                 Stream<Path> slotDirs = Files.list(slotRangeDir)

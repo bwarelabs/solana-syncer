@@ -14,8 +14,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.qcloud.cos.transfer.*;
-
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -26,49 +24,22 @@ public class CosUtils {
     private static final Logger logger = Logger.getLogger(CosUtils.class.getName());
 
     private static final String BUCKET_NAME;
-    private static final String COS_ENDPOINT;
     private static final String REGION;
-    private static final String AWS_ID_KEY;
-    private static final String AWS_SECRET_KEY;
+    private static final String COS_ID_KEY;
+    private static final String COS_SECRET_KEY;
     private static final String SYNC_TYPE; 
     private static final int BUFFER_SIZE = 60 * 1024 * 1024; // 60MB
 
-    private static final int MAX_RETRIES = 2;
     private static final int SOCKET_TIMEOUT;
     private static final int CONNECTION_TIMEOUT;
     private static final int THREAD_COUNT;
-
-    static TransferManager createTransferManager(COSClient cosClient) {
-        // Set the thread pool size. We recommend you set the size of your thread pool
-        // to 16 or 32 to maximize network resource utilization, provided your client
-        // and COS networks are sufficient (for example, uploading a file to a COS
-        // bucket from a CVM instance in the same region).
-        // We recommend you use a smaller value to avoid timeout caused by slow network
-        // speed if you are transferring data over a public network with poor bandwidth
-        // quality.
-        ExecutorService threadPool = Executors.newFixedThreadPool(32);
-
-        // Pass a `threadpool`; otherwise, a single-thread pool will be generated in
-        // `TransferManager` by default.
-        TransferManager transferManager = new TransferManager(cosClient, threadPool);
-
-        // Set the configuration items of the advanced API.
-        // Set the threshold and part size for multipart upload to 5 MB and 1 MB
-        // respectively.
-        TransferManagerConfiguration transferManagerConfiguration = new TransferManagerConfiguration();
-        // transferManagerConfiguration.setMultipartUploadThreshold(15 * 1024 * 1024);
-        // transferManagerConfiguration.setMinimumUploadPartSize(0 * 1024 * 1024);
-        transferManager.setConfiguration(transferManagerConfiguration);
-
-        return transferManager;
-    }
 
     static COSClient createCOSClient() {
         // Set the user identity information.
         // Log in to the [CAM console](https://console.cloud.tencent.com/cam/capi) to
         // view and manage the `SECRETID` and `SECRETKEY` of your project.
-        String secretId = AWS_ID_KEY;
-        String secretKey = AWS_SECRET_KEY;
+        String secretId = COS_ID_KEY;
+        String secretKey = COS_SECRET_KEY;
         COSCredentials cred = new BasicCOSCredentials(secretId, secretKey);
 
         // `ClientConfig` contains the COS client configuration for subsequent COS
@@ -79,13 +50,6 @@ public class CosUtils {
         // For more information on COS regions, visit
         // https://cloud.tencent.com/document/product/436/6224.
         clientConfig.setRegion(new Region(REGION));
-
-        // Set the request protocol to `http` or `https`.
-        // For v5.6.53 or earlier, HTTPS is recommended.
-        // For v5.6.54 or later, HTTPS is used by default.
-        // clientConfig.setHttpProtocol(HttpProtocol.https);
-
-        // The following settings are optional:
 
         // Set the read timeout period, which is 30s by default.
         clientConfig.setSocketTimeout(SOCKET_TIMEOUT * 1000);
@@ -106,10 +70,9 @@ public class CosUtils {
         }
 
         BUCKET_NAME = Utils.getRequiredProperty(properties, "cos-utils.tencent.bucket-name");
-        COS_ENDPOINT = Utils.getRequiredProperty(properties, "cos-utils.tencent.endpoint");
         REGION = Utils.getRequiredProperty(properties, "cos-utils.tencent.region");
-        AWS_ID_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.id-key");
-        AWS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
+        COS_ID_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.id-key");
+        COS_SECRET_KEY = Utils.getRequiredProperty(properties, "cos-utils.tencent.secret-key");
         SOCKET_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.socket-timeout"));
         CONNECTION_TIMEOUT = Integer
                 .parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
@@ -154,12 +117,7 @@ public class CosUtils {
 
                 logger.info(String.format("while loop completed. partNumber: %d", partNumber));
 
-                // if we get another part too small error, this is probably the issue!!!!
-                // can be fixed with 2 buffers, 1st one used to concatenate data from 2nd buffer
-                // at the end of the loop
                 if (offset > 0) {
-                    // logger.info(String.format("buffer size is greater than 0. partNumber: %d",
-                    // partNumber));
                     PartETag partETag = uploadPart(key, uploadId, partNumber++, data, offset, true);
                     partETags.add(partETag);
                 }
@@ -184,7 +142,6 @@ public class CosUtils {
                     logger.info("Connection timed out.");
                     skipError = true;
                 } else {
-                    // this is the one who triggers
                     while (cause != null && !skipError) {
                         if (cause instanceof SocketException && cause.getMessage().contains("Connection timed out")) {
                             logger.info("Connection timed out  from while loop.");
