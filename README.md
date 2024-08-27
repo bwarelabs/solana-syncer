@@ -1,6 +1,9 @@
-## Syncer Overview and System Architecture
+## Solana Syncer 
 
-The Syncer is a component designed to facilitate the migration and synchronization of data from Google Bigtable to Tencent Cloud Object Storage, ensuring that the Solana blockchain project is available on multiple infrastructures. The Syncer operates in two main modes: **ArchiveSync** and **LiveSync**.
+### Project Overview
+
+The Solana Syncer is a specialized tool designed to facilitate the migration and synchronization of data from Google BigTable to Tencent Cloud Storage in a sequence file format. It operates in two main modes: ArchiveSync for handling large-scale, historical data migrations, and LiveSync for real-time data synchronization. The Syncer is a critical component for ensuring that Solana's data can be efficiently stored and accessed on alternative cloud storage platforms, providing greater flexibility and independence from Google Cloud infrastructure.
+
 
 ### ArchiveSync
 - **Purpose**: Handles the bulk migration of existing historical data from Google Bigtable to Tencent Cloud Object Storage.
@@ -21,23 +24,23 @@ The Syncer is a component designed to facilitate the migration and synchronizati
 1. **Bigtable Emulator**:
     - A local emulator for Google Bigtable, allowing developers to simulate Bigtable's environment without incurring costs. It is used during development to test interactions with Bigtable locally.
 
-2. **HashBase Container**:
-    - A local setup of HashBase, part of the Hadoop ecosystem, where data is imported from Tencent Cloud Object Storage for querying and analysis.
+2. **HBase Container**:
+    - A local setup of HBase, part of the Hadoop ecosystem, where data is imported from Tencent Cloud Object Storage for querying and analysis.
 
-3. **Solana Bigtable HashBase Adapter**:
-    - Acts as an intermediary interface, mimicking Google Bigtable’s API. This allows the Solana node to interact with HashBase as if it were Google Bigtable, enabling seamless data operations without modifying the node's logic.
+3. **Solana Bigtable HBase Adapter**:
+    - Acts as an intermediary interface, mimicking Google Bigtable’s API. This allows the Solana node to interact with HBase as if it were Google Bigtable, enabling seamless data operations without modifying the node's logic.
 
 4. **Solana Lite RPC**:
-    - A lightweight RPC server used to query data from HashBase, providing a simplified interface for accessing the blockchain data stored in HashBase.
+    - A lightweight RPC server used to query data from HBase, providing a simplified interface for accessing the blockchain data stored in HBase.
 
 5. **Validator**:
     - A Solana test validator running locally. This component is crucial for simulating a Solana environment during testing, ensuring that the entire setup behaves as expected.
 
 6. **Docker and Docker Compose**:
-    - The entire system is containerized using Docker, with Docker Compose orchestrating the deployment and interaction between these services. Depending on the use case (e.g., using the Bigtable emulator or the HashBase adapter), configuration changes such as uncommenting specific lines in the Docker Compose file and adjusting environment variables are necessary.
+    - The entire system is containerized using Docker, with Docker Compose orchestrating the deployment and interaction between these services. Depending on the use case (e.g., using the Bigtable emulator or the HBase adapter), configuration changes such as uncommenting specific lines in the Docker Compose file and adjusting environment variables are necessary.
 
 ### Usage Considerations
-When setting up the Syncer, users must decide whether to operate in ArchiveSync or LiveSync mode, depending on whether they are dealing with historical or real-time data. Additionally, depending on the development or production environment, users may need to enable the Bigtable emulator or configure the Solana node to interact with the Solana Bigtable HashBase Adapter. Check `docker-compose.yml` for the necessary configurations.
+When setting up the Syncer, users must decide whether to operate in ArchiveSync or LiveSync mode, depending on whether they are dealing with historical or real-time data. Additionally, depending on the development or production environment, users may need to enable the Bigtable emulator or configure the Solana node to interact with the Solana Bigtable HBase Adapter. Check `docker-compose.yml` for the necessary configurations.
 
 ### Configuration
 
