@@ -47,7 +47,8 @@ The Syncer relies on a configuration file `config.properties` to manage settings
 You can run the Syncer using existing scripts, either single instance or in a cluster using something like Slurm. For local development, you can check [Solana Test Setup](https://github.com/bwarelabs/solana-test-setup).
 1. Set the proper configuration in `config.properties`, see the existing `config.properties` for reference.
 2. Add the `bigtable-service-account-key.json` file to the root directory. You should get this file from the Google Cloud Console.
-3. Run either `run_syncer_bigtable.sh` or `run_syncer_local_files.sh` to start the Syncer service, depending on the data source you want to use.
+3. Run either `run_syncer_bigtable.sh` or `run_syncer_local_files.sh` to start the Syncer service, depending on the data source you want to use.  
+**IMPORTANT**: When running the Syncer in local mode, you need to have the both Solana node and [Solana Cos Plugin](https://github.com/bwarelabs/solana-cos-plugin) running and producing data to the local directory specified in the `config.properties` file.
 
 ### Generating protobuf implementations (TODO: add this after ingestor is ready)
 ```
