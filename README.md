@@ -1,6 +1,6 @@
 ## Syncer Overview and System Architecture
 
-The Syncer is a critical component designed to facilitate the migration and synchronization of data from Google Bigtable to Tencent Cloud Object Storage, ensuring that the Solana blockchain project is available on multiple infrastructures. The Syncer operates in two main modes: **ArchiveSync** and **LiveSync**.
+The Syncer is a component designed to facilitate the migration and synchronization of data from Google Bigtable to Tencent Cloud Object Storage, ensuring that the Solana blockchain project is available on multiple infrastructures. The Syncer operates in two main modes: **ArchiveSync** and **LiveSync**.
 
 ### ArchiveSync
 - **Purpose**: Handles the bulk migration of existing historical data from Google Bigtable to Tencent Cloud Object Storage.
