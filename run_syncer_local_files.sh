@@ -1,7 +1,4 @@
 #!/bin/bash
-#SBATCH --nodes=1
-#SBATCH --exclusive
-#SBATCH --output=syncing_%x.log
 
 sudo docker build -t solana-syncer .
 
