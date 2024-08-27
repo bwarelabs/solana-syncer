@@ -9,5 +9,5 @@ sudo docker build -t solana-syncer .
 sudo docker run --rm --name solana-syncer-job \
   -e JVM_ARGS="-Xmx26g" \
   -v ./config.properties:/app/config.properties \
-  -v ./solana-tencent-e042e478aa66.json:/app/solana-tencent-e042e478aa66.json \
+  -v ./test.json:/app/test.json \
   solana-syncer -- read-source=bigtable # start-key=$1 end-key=$2
