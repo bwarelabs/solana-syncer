@@ -35,7 +35,7 @@ public class BigTableToCosWriter {
     private final ExecutorService executorService;
     private final String TABLE_NAME;
 
-    public BigTableToCosWriter(Properties properties, String startKey, String endKey) throws Exception {
+    public BigTableToCosWriter(Properties properties, String startKey, String endKey, boolean useEmulator) throws Exception {
         LogManager.getLogManager().readConfiguration(
                 BigTableToCosWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
 
@@ -52,17 +52,19 @@ public class BigTableToCosWriter {
         }
 
         this.SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
-
         String projectId = Utils.getRequiredProperty(properties, "bigtable.project-id");
         String instanceId = Utils.getRequiredProperty(properties, "bigtable.instance-id");
-        String pathToCredentials = Utils.getRequiredProperty(properties, "bigtable.credentials");
-        // Load credentials from JSON key file
-        GoogleCredentials credentials = GoogleCredentials.fromStream(new FileInputStream(pathToCredentials));
 
         BigtableDataSettings.Builder settingsBuilder = BigtableDataSettings.newBuilder().setProjectId(projectId)
                 .setInstanceId(instanceId).setAppProfileId("default")
-                .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
                 .setMetricsProvider(NoopMetricsProvider.INSTANCE);
+
+        if (!useEmulator) {
+            String pathToCredentials = Utils.getRequiredProperty(properties, "bigtable.credentials");
+            // Load credentials from JSON key file
+            GoogleCredentials credentials = GoogleCredentials.fromStream(new FileInputStream(pathToCredentials));
+            settingsBuilder.setCredentialsProvider(FixedCredentialsProvider.create(credentials));
+        }
 
         settingsBuilder.stubSettings().setMetricsProvider(NoopMetricsProvider.INSTANCE);
 

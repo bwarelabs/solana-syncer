@@ -25,6 +25,7 @@ public class App {
     String readSource = null;
     String blocksStartKey = null;
     String blocksLastKey = null;
+    boolean useEmulator = false;
 
     for (String arg : args) {
       if (arg.startsWith("read-source=")) {
@@ -33,6 +34,8 @@ public class App {
         blocksStartKey = arg.split("=")[1];
       } else if (arg.startsWith("blocks-last-key=")) {
         blocksLastKey = arg.split("=")[1];
+      } else if (arg.startsWith("use-emulator=")) {
+        useEmulator = Boolean.parseBoolean(arg.split("=")[1]);
       }
     }
 
@@ -43,7 +46,7 @@ public class App {
 
     if (readSource.equals("bigtable")) {
       try {
-        BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties, blocksStartKey, blocksLastKey);
+        BigTableToCosWriter bigTableToCosWriter = new BigTableToCosWriter(properties, blocksStartKey, blocksLastKey, useEmulator);
         bigTableToCosWriter.write();
 
         CosUtils.cosClient.shutdown();
