@@ -5,6 +5,7 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 
@@ -108,6 +109,7 @@ public class GeyserPluginToCosWriter {
 
         } catch (Exception e) {
             logger.severe(String.format("Error processing directory: %s, %s", path, e.getMessage()));
+            e.printStackTrace();
         }
     }
 
@@ -115,28 +117,23 @@ public class GeyserPluginToCosWriter {
         logger.info("Processing slot range: " + slotRangeDir.getFileName());
 
         Configuration hadoopConfig = new Configuration();
-        hadoopConfig.setStrings("io.serializations", WritableSerialization.class.getName());
+        hadoopConfig.setStrings("io.serializations", WritableSerialization.class.getName(), ResultSerialization.class.getName());
+        String range = String.valueOf(slotRangeDir.getFileName());
 
         try (
-                CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(slotRangeDir, "entries", syncType);
-                CustomSequenceFileWriter entriesWriter = new CustomSequenceFileWriter(hadoopConfig, entriesStream);
+            CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(range, "blocks", syncType);
+            CustomSequenceFileWriter blocksWriter = new CustomSequenceFileWriter(hadoopConfig, blocksStream);
 
-                CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(slotRangeDir, "blocks", syncType);
-                CustomSequenceFileWriter blocksWriter = new CustomSequenceFileWriter(hadoopConfig, blocksStream);
+            CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(range, "entries", syncType);
+            CustomSequenceFileWriter entriesWriter = new CustomSequenceFileWriter(hadoopConfig, entriesStream);
 
-                CustomS3FSDataOutputStream txStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx", syncType);
-                CustomSequenceFileWriter txWriter = new CustomSequenceFileWriter(hadoopConfig, txStream);
-
-                CustomS3FSDataOutputStream txByAddrStream = new CustomS3FSDataOutputStream(slotRangeDir, "tx_by_addr", syncType);
-                CustomSequenceFileWriter txByAddrWriter = new CustomSequenceFileWriter(hadoopConfig, txByAddrStream);
-
-                Stream<Path> slotDirs = Files.list(slotRangeDir)
+            Stream<Path> slotDirs = Files.list(slotRangeDir)
         ) {
             slotDirs
                     .filter(Files::isDirectory)
                     .forEach(slotDir -> {
                         try {
-                            processSlot(slotDir, entriesWriter, blocksWriter, txWriter, txByAddrWriter);
+                            processSlot(slotDir, entriesWriter, blocksWriter);
                         } catch (Exception e) {
                             logger.severe(String.format("Error processing slot: %s, %s", slotDir.getFileName(), e.getMessage()));
                             e.printStackTrace();
@@ -144,16 +141,10 @@ public class GeyserPluginToCosWriter {
                     });
 
             // Closing writers so the CustomS3FSDataOutputStream creates the futures
-            entriesWriter.close();
             blocksWriter.close();
-            txWriter.close();
-            txByAddrWriter.close();
 
             return CompletableFuture.allOf(
-                    entriesStream.getUploadFuture(),
-                    blocksStream.getUploadFuture(),
-                    txStream.getUploadFuture(),
-                    txByAddrStream.getUploadFuture()
+                    blocksStream.getUploadFuture()
             ).thenRunAsync(() -> {
                 logger.info("Slot range processed: " + slotRangeDir.getFileName() + ", deleting slot range...");
                 try {
@@ -170,7 +161,7 @@ public class GeyserPluginToCosWriter {
         }
     }
 
-    private static void processSlot(Path slotDir, CustomSequenceFileWriter entriesWriter, CustomSequenceFileWriter blocksWriter, CustomSequenceFileWriter txWriter, CustomSequenceFileWriter txByAddrWriter) throws IOException {
+    private static void processSlot(Path slotDir, CustomSequenceFileWriter entriesWriter, CustomSequenceFileWriter blocksWriter) throws IOException {
         Files.walkFileTree(slotDir, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
@@ -186,8 +177,9 @@ public class GeyserPluginToCosWriter {
                         fileName.substring(0, fileName.lastIndexOf('.')) :
                         fileName;
 
-                if (folderName.equals("tx_by_addr")) {
-                    rowKeyWithoutExtension = rowKeyWithoutExtension.replace("_", "/");
+                if (!folderName.equals("blocks") && !folderName.equals("entries")) {
+                    logger.warning("Skipping file: " + file + ". There should be no other files in the slot directory other than blocks and entries.");
+                    return FileVisitResult.CONTINUE;
                 }
 
                 byte[] fileContent = Files.readAllBytes(file);
@@ -195,21 +187,7 @@ public class GeyserPluginToCosWriter {
                 long timestamp = System.currentTimeMillis();
 
                 String columnFamily = "x";
-                String qualifier;
-
-                switch (folderName) {
-                    case "entries":
-                    case "blocks":
-                    case "tx_by_addr":
-                        qualifier = "proto";
-                        break;
-                    case "tx":
-                        qualifier = "bin";
-                        break;
-                    default:
-                        logger.warning("Unknown folder type: " + folderName);
-                        return FileVisitResult.CONTINUE;
-                }
+                String qualifier = "proto";
 
                 Cell cell = CellUtil.createCell(
                         rowKeyWithoutExtension.getBytes(),
@@ -221,21 +199,19 @@ public class GeyserPluginToCosWriter {
                 );
 
                 Result result = Result.create(Collections.singletonList(cell));
-
                 switch (folderName) {
-                    case "entries":
-                        entriesWriter.append(key, result);
-                        break;
                     case "blocks":
                         blocksWriter.append(key, result);
                         break;
-                    case "tx":
-                        txWriter.append(key, result);
+                    case "entries":
+                        entriesWriter.append(key, result);
                         break;
-                    case "tx_by_addr":
-                        txByAddrWriter.append(key, result);
+                    default:
+                        logger.warning("Skipping file: " + file + ". There should be no other files in the slot directory other than blocks and entries.");
                         break;
                 }
+
+
                 return FileVisitResult.CONTINUE;
             }
         });

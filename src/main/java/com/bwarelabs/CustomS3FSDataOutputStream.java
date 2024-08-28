@@ -14,58 +14,46 @@ import java.util.logging.Logger;
 
 public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private static final Logger logger = Logger.getLogger(CustomS3FSDataOutputStream.class.getName());
-    private static final org.slf4j.Logger log = LoggerFactory.getLogger(CustomS3FSDataOutputStream.class);
 
     private final PipedOutputStream pipedOutputStream;
     private final PipedInputStream pipedInputStream;
-    private final String s3Key;
+    private final String cosPath;
     private CompletableFuture uploadFuture;
     private boolean controlledClose = false;
 
-    public CustomS3FSDataOutputStream(Path slotRangeDir, String category, String syncType) throws IOException {
-        this(new PipedOutputStream(), slotRangeDir, category, syncType);
-        logger.info("CustomS3FSDataOutputStream created for key: " + s3Key);
+    public CustomS3FSDataOutputStream(String range, String tableName, String syncType) throws IOException {
+        this(new PipedOutputStream(), range, tableName, syncType);
+        logger.info("CustomS3FSDataOutputStream created for key: " + cosPath);
     }
 
-    private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, Path slotRangeDir, String category, String syncType) throws IOException {
+    private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, String range, String tableName, String syncType) throws IOException {
         super(pipedOutputStream, null);
         this.pipedOutputStream = pipedOutputStream;
         this.pipedInputStream = new PipedInputStream(pipedOutputStream, 30 * 1024 * 1024);
-        this.s3Key = syncType + "/" + category + "/" + slotRangeDir.getFileName() + "/" + category + ".seq";
+        this.cosPath = syncType + "/" + tableName + "/" + range + "/" + tableName + ".seq";
         initiateUpload();
     }
 
     private void initiateUpload() {
-        logger.info(String.format("Initiating upload for: %s", s3Key));
+        logger.info(String.format("Initiating upload for: %s", cosPath));
         try {
-            uploadFuture = CosUtils.uploadToCos(s3Key, pipedInputStream, this);
-
-            /*
-            uploadFuture.exceptionally(ex -> {
-                logger.severe(String.format("Failed to upload %s to S3", s3Key));
-                ex.printStackTrace();
-                return null;
-            });
-            */
+            uploadFuture = CosUtils.uploadToCos(cosPath, pipedInputStream, this);
         } catch (Exception e) {
-            logger.severe(String.format("Failed to initiate upload %s to S3", s3Key));
+            logger.severe(String.format("Failed to initiate upload %s to S3", cosPath));
             e.printStackTrace();
+            throw e;
         }
     }
 
     @Override
     public void close() throws IOException {
-        logger.info("Closing stream for: " + s3Key);
+        logger.info("Closing stream for: " + cosPath);
         super.close();
         pipedOutputStream.close();
     }
 
     public CompletableFuture<Void> getUploadFuture() {
         return uploadFuture;
-    }
-
-    public String getS3Key() {
-        return s3Key;
     }
 
     public void setControlledClose(boolean controlledClose) {
