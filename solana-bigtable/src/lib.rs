@@ -1,28 +1,23 @@
 use jni::objects::ReleaseMode;
-use jni::objects::{JByteArray, JObject, JValue};
+use jni::objects::{JByteArray, JObject};
 use jni::JNIEnv;
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::io::{stdout, Write};
 use std::slice;
 
 use prost::Message;
 use solana_sdk::{
     clock::{Slot, UnixTimestamp},
     deserialize_utils::default_on_eof,
-    message::v0::LoadedAddresses,
     pubkey::Pubkey,
     reserved_account_keys::ReservedAccountKeys,
     transaction::{TransactionError, VersionedTransaction},
 };
-use solana_storage_proto::convert::{entries, generated, tx_by_addr};
+use solana_storage_proto::convert::{generated, tx_by_addr};
 use solana_transaction_status::{
-    extract_and_fmt_memos, ConfirmedBlock, ConfirmedTransactionStatusWithSignature,
-    ConfirmedTransactionWithStatusMeta, EntrySummary, Reward, TransactionByAddrInfo,
-    TransactionConfirmationStatus, TransactionStatus, TransactionStatusMeta,
-    TransactionWithStatusMeta, VersionedConfirmedBlock, VersionedConfirmedBlockWithEntries,
-    VersionedTransactionWithStatusMeta,
+    extract_and_fmt_memos, ConfirmedBlock, Reward, TransactionByAddrInfo, TransactionStatusMeta,
+    TransactionWithStatusMeta, VersionedConfirmedBlock, VersionedTransactionWithStatusMeta,
 };
 
 use crate::compression::{compress_best, decompress};
@@ -36,11 +31,11 @@ fn slot_to_key(slot: Slot) -> String {
     format!("{slot:016x}")
 }
 
-fn slot_to_blocks_key(slot: Slot) -> String {
+fn _slot_to_blocks_key(slot: Slot) -> String {
     slot_to_key(slot)
 }
 
-fn slot_to_entries_key(slot: Slot) -> String {
+fn _slot_to_entries_key(slot: Slot) -> String {
     slot_to_key(slot)
 }
 
@@ -48,12 +43,11 @@ fn slot_to_tx_by_addr_key(slot: Slot) -> String {
     slot_to_key(!slot)
 }
 
-fn key_to_slot(key: &str) -> Option<Slot> {
+fn _key_to_slot(key: &str) -> Option<Slot> {
     match Slot::from_str_radix(key, 16) {
         Ok(slot) => Some(slot),
-        Err(err) => {
+        Err(_) => {
             // bucket data is probably corrupt
-            //warn!("Failed to parse object key as a slot: {}: {}", key, err);
             None
         }
     }
@@ -161,14 +155,7 @@ impl From<StoredConfirmedBlockTransactionStatusMeta> for TransactionStatusMeta {
             fee,
             pre_balances,
             post_balances,
-            inner_instructions: None,
-            log_messages: None,
-            pre_token_balances: None,
-            post_token_balances: None,
-            rewards: None,
-            loaded_addresses: LoadedAddresses::default(),
-            return_data: None,
-            compute_units_consumed: None,
+            ..Default::default()
         }
     }
 }
@@ -200,7 +187,7 @@ pub fn generate_upload_vectors(
     };
 
     let txs_java_array: JObject = env
-        .get_field(&object, "txs", "Ljava/util/List;")
+        .get_field(object, "txs", "Ljava/util/List;")
         .unwrap()
         .l()
         .unwrap();
@@ -233,7 +220,7 @@ pub fn generate_upload_vectors(
             }
         }
 
-        let java_key = env.new_string(&signature.to_string()).unwrap();
+        let java_key = env.new_string(signature.to_string()).unwrap();
         let java_value = env
             .byte_array_from_slice(
                 &compress_best(
@@ -265,40 +252,45 @@ pub fn generate_upload_vectors(
     }
 
     let tx_by_addrs_java_array: JObject = env
-        .get_field(&object, "txByAddrs", "Ljava/util/List;")
+        .get_field(object, "txByAddrs", "Ljava/util/List;")
         .unwrap()
         .l()
         .unwrap();
-    by_addr.into_iter().for_each(|(address, transaction_info_by_addr)| {
-        let java_key = env
-            .new_string(format!("{}/{}", address, slot_to_tx_by_addr_key(slot)))
-            .unwrap();
-        let java_value = env
-            .byte_array_from_slice(
-                &compress_best(
-                    &(tx_by_addr::TransactionByAddr {
-                        tx_by_addrs: transaction_info_by_addr.into_iter().map(Into::into).collect(),
-                    })
-                    .encode_to_vec(),
+    by_addr
+        .into_iter()
+        .for_each(|(address, transaction_info_by_addr)| {
+            let java_key = env
+                .new_string(format!("{}/{}", address, slot_to_tx_by_addr_key(slot)))
+                .unwrap();
+            let java_value = env
+                .byte_array_from_slice(
+                    &compress_best(
+                        &(tx_by_addr::TransactionByAddr {
+                            tx_by_addrs: transaction_info_by_addr
+                                .into_iter()
+                                .map(Into::into)
+                                .collect(),
+                        })
+                        .encode_to_vec(),
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
+                .unwrap();
+            let cell = env
+                .new_object(
+                    "com/bwarelabs/BigtableCell",
+                    "(Ljava/lang/String;[B)V",
+                    &[(&java_key).into(), (&java_value).into()],
+                )
+                .unwrap();
+            env.call_method(
+                &tx_by_addrs_java_array,
+                "add",
+                "(Ljava/lang/Object;)Z",
+                &[(&cell).into()],
             )
             .unwrap();
-        let cell = env
-            .new_object(
-                "com/bwarelabs/BigtableCell",
-                "(Ljava/lang/String;[B)V",
-                &[(&java_key).into(), (&java_value).into()],
-            )
-            .unwrap();
-        env.call_method(
-            &tx_by_addrs_java_array,
-            "add",
-            "(Ljava/lang/Object;)Z",
-            &[(&cell).into()],
-        )
-        .unwrap();
-    });
+        });
 }
 
 #[no_mangle]
