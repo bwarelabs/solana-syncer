@@ -30,9 +30,9 @@ public class App {
     for (String arg : args) {
       if (arg.startsWith("read-source=")) {
         readSource = arg.split("=")[1];
-      } else if (arg.startsWith("blocks-start-key=")) {
+      } else if (arg.startsWith("start-key=")) {
         blocksStartKey = arg.split("=")[1];
-      } else if (arg.startsWith("blocks-last-key=")) {
+      } else if (arg.startsWith("end-key=")) {
         blocksLastKey = arg.split("=")[1];
       } else if (arg.startsWith("use-emulator=")) {
         useEmulator = Boolean.parseBoolean(arg.split("=")[1]);
