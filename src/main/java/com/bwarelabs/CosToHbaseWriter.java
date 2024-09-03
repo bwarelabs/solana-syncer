@@ -29,11 +29,10 @@ import org.apache.hadoop.io.serializer.WritableSerialization;
 
 public class CosToHbaseWriter {
 
-    private static final Logger logger = Logger.getLogger(BigTableToCosWriter.class.getName());
+    private static final Logger logger = Logger.getLogger(CosToHbaseWriter.class.getName());
 
     private final String START_KEY;
     private final String END_KEY;
-    private final String PREFIX;
     private final String WORKSPACE;
 
     private final Configuration CONFIG_HBASE;
@@ -41,11 +40,10 @@ public class CosToHbaseWriter {
 
     public CosToHbaseWriter(Properties properties, String startKey, String endKey) throws Exception {
         LogManager.getLogManager().readConfiguration(
-                BigTableToCosWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
+                CosToHbaseWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
 
         this.START_KEY = startKey != null ? startKey : Utils.getRequiredProperty(properties, "hbase.start-key");
         this.END_KEY = endKey != null ? endKey : Utils.getRequiredProperty(properties, "hbase.end-key");
-        this.PREFIX = Utils.getRequiredProperty(properties, "hbase.cos-prefix");
         this.WORKSPACE = Utils.getRequiredProperty(properties, "hbase.download-dir");
 
         // HBase configuration
@@ -63,8 +61,6 @@ public class CosToHbaseWriter {
     }
 
     public void write() throws Exception {
-        String cos_prefix = "/" + PREFIX + "/";
-
         String regex = "range_([0-9a-fA-F]+)";
         Pattern pattern = Pattern.compile(regex);
 
@@ -74,7 +70,7 @@ public class CosToHbaseWriter {
         try (Connection connection = ConnectionFactory.createConnection(CONFIG_HBASE);) {
             createTables(connection);
 
-            CosUtils.walkKeysByPrefix(cos_prefix, (key) -> {
+            CosUtils.walkKeysByPrefix((key) -> {
                 Matcher matcher = pattern.matcher(key);
                 if (!matcher.find()) {
                     return;

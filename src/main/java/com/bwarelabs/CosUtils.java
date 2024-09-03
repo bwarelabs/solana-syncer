@@ -308,10 +308,9 @@ public class CosUtils {
         void call(String key);
     }
 
-    public static void walkKeysByPrefix(String path, CosKeyCallback callback) {
+    public static void walkKeysByPrefix(CosKeyCallback callback) {
         ListObjectsRequest listObjectsRequest = new ListObjectsRequest();
         listObjectsRequest.setBucketName(BUCKET_NAME);
-        listObjectsRequest.setPrefix(path);
 
         ObjectListing objectListing;
         do {
