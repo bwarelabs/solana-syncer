@@ -46,11 +46,21 @@
     <artifactId>hbase-mapreduce</artifactId>
     <version>2.6.0</version>
   </dependency>
-  <dependency>
-    <groupId>org.apache.hadoop</groupId>
-    <artifactId>hadoop-common</artifactId>
-    <version>3.4.0</version>
-  </dependency>
+    <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-common</artifactId>
+        <version>3.3.4</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-hdfs</artifactId>
+        <version>3.3.4</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-auth</artifactId>
+        <version>3.3.4</version>
+    </dependency>
     <dependency>
       <groupId>com.google.cloud</groupId>
       <artifactId>google-cloud-bigtable</artifactId>
@@ -60,7 +70,11 @@
       <artifactId>bigtable-hbase</artifactId>
       <version>2.14.2</version>
     </dependency>
-
+    <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.13.0</version>
+    </dependency>
     <dependency>
           <groupId>com.qcloud</groupId>
           <artifactId>cos_api</artifactId>

@@ -3,7 +3,6 @@ package com.bwarelabs;
 import com.google.cloud.bigtable.data.v2.models.*;
 import java.util.List;
 import java.util.ArrayList;
-import com.bwarelabs.BigtableCell;
 
 public class BigtableBlock {
     private static final int PROTOBUF = 0;
@@ -12,16 +11,14 @@ public class BigtableBlock {
     private final int type;
     private final byte[] compressedBlock;
 
-    public final List<BigtableCell> txs;
-    public final List<BigtableCell> txByAddrs;
+    public final List<BigtableCell> txs = new ArrayList<>();
+    public final List<BigtableCell> txByAddrs = new ArrayList<>();
 
     static {
         System.loadLibrary("solana_bigtable");
     }
 
     public BigtableBlock(Row row) {
-        txs = new ArrayList<>();
-        txByAddrs = new ArrayList<>();
         slot = Long.parseLong(row.getKey().toStringUtf8(), 16);
 
         RowCell rowCell = row.getCells().get(0);
@@ -32,7 +29,23 @@ public class BigtableBlock {
             this.type = BINCODE;
         }
         this.compressedBlock = rowCell.getValue().toByteArray();
+        // Extract the transactions from the block (call JNI method)
+        process();
     }
 
+    public BigtableBlock(String key, byte[] qualifier, byte[] value) {
+        this.slot = Long.parseLong(key, 16);
+        if (qualifier[0] == 'p') { // proto
+            this.type = PROTOBUF;
+        } else { // bin
+            assert (qualifier[0] == 'b');
+            this.type = BINCODE;
+        }
+        this.compressedBlock = value;
+        // Extract the transactions from the block (call JNI method)
+        process();
+    }
+
+    /** JNI methods */
     public native void process();
 }
