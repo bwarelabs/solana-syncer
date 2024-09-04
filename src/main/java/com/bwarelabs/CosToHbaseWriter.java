@@ -1,12 +1,22 @@
 package com.bwarelabs;
 
 import java.io.*;
-import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import java.lang.reflect.InvocationTargetException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -27,13 +37,19 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 
+// TODO: refactor to use try-with-resources
 public class CosToHbaseWriter {
 
     private static final Logger logger = Logger.getLogger(CosToHbaseWriter.class.getName());
 
+    private final byte[] COLUMN_FAMILY = Bytes.toBytes("x");
+    private final byte[] BIN_QUALIFIER = Bytes.toBytes("bin");
+    private final byte[] PROTO_QUALIFIER = Bytes.toBytes("proto");
+
     private final String START_KEY;
     private final String END_KEY;
     private final String WORKSPACE;
+    private final int CONFIG_POOL_SIZE;
 
     private final Configuration CONFIG_HBASE;
     private final Configuration CONFIG_HADOOP;
@@ -42,9 +58,9 @@ public class CosToHbaseWriter {
         LogManager.getLogManager().readConfiguration(
                 CosToHbaseWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
 
-        this.START_KEY = startKey != null ? startKey : Utils.getRequiredProperty(properties, "hbase.start-key");
-        this.END_KEY = endKey != null ? endKey : Utils.getRequiredProperty(properties, "hbase.end-key");
-        this.WORKSPACE = Utils.getRequiredProperty(properties, "hbase.download-dir");
+        START_KEY = startKey != null ? startKey : Utils.getRequiredProperty(properties, "hbase.start-key");
+        END_KEY = endKey != null ? endKey : Utils.getRequiredProperty(properties, "hbase.end-key");
+        WORKSPACE = Utils.getRequiredProperty(properties, "hbase.download-dir");
 
         // HBase configuration
         CONFIG_HBASE = HBaseConfiguration.create();
@@ -58,6 +74,7 @@ public class CosToHbaseWriter {
         CONFIG_HADOOP.setStrings("io.serializations", ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
+        CONFIG_POOL_SIZE = Integer.parseInt(Utils.getRequiredProperty(properties, "hbase.worker-pool.size"));
     }
 
     public void write() throws Exception {
@@ -67,34 +84,84 @@ public class CosToHbaseWriter {
         int end_boundary = Integer.parseInt(END_KEY, 16);
         int start_boundary = Integer.parseInt(START_KEY, 16);
 
-        try (Connection connection = ConnectionFactory.createConnection(CONFIG_HBASE);) {
+        try (Connection connection = ConnectionFactory.createConnection(CONFIG_HBASE)) {
             createTables(connection);
 
-            CosUtils.walkKeysByPrefix((key) -> {
-                Matcher matcher = pattern.matcher(key);
-                if (!matcher.find()) {
-                    return;
-                }
-                String start = matcher.group(1);
-                int start_value = Integer.parseInt(start, 16);
-                if (start_value < start_boundary || start_value >= end_boundary) {
-                    return;
-                }
-                if (key.contains("blocks")) {
-                    processBlock(connection, key);
-                }
-                if (key.contains("entries")) {
-                    processEntries(connection, key);
-                }
-            });
+            BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(2 * CONFIG_POOL_SIZE);
+            ExecutorService executor = new ThreadPoolExecutor(
+                    CONFIG_POOL_SIZE, CONFIG_POOL_SIZE, 0L, TimeUnit.MILLISECONDS, workQueue,
+                    new ThreadPoolExecutor.CallerRunsPolicy());
+
+            try (Table snapshots = connection.getTable(TableName.valueOf("snapshots"))) {
+                CosUtils.walkKeysByPrefix((key) -> {
+                    Matcher matcher = pattern.matcher(key);
+                    if (!matcher.find()) {
+                        return;
+                    }
+                    String start = matcher.group(1);
+                    int start_value = Integer.parseInt(start, 16);
+                    if (start_value < start_boundary || start_value >= end_boundary) {
+                        return;
+                    }
+
+                    String dstPath = WORKSPACE + "/" + key;
+                    try {
+                        byte[] cosKey = key.getBytes();
+
+                        logger.info("Checking block range completion: " + key);
+                        Get get = new Get(cosKey);
+                        Result result = snapshots.get(get);
+                        if (!result.isEmpty()) {
+                            logger.info("Block range already processed: " + key);
+                            return;
+                        }
+
+                        boolean isBlock = key.contains("blocks");
+                        boolean isEntries = key.contains("entries");
+                        if (!isBlock && !isEntries) {
+                            logger.info("Skipping key: " + key);
+                            return;
+                        }
+
+                        logger.info("Downloading data in range: " + key);
+                        CosUtils.downloadByKey(key, dstPath);
+
+                        logger.info("Processing data in range: " + key);
+                        if (isBlock) {
+                            processBlock(connection, executor, dstPath);
+                        }
+                        if (isEntries) {
+                            processEntries(connection, executor, dstPath);
+                        }
+
+                        // Insert marker for block range completion so we don't reprocess it
+                        Put put_status = new Put(cosKey);
+                        put_status.addColumn(COLUMN_FAMILY, "status".getBytes(), new byte[] {});
+                        snapshots.put(put_status);
+
+                    } catch (IOException | InstantiationException | IllegalAccessException | IllegalArgumentException
+                            | InvocationTargetException | NoSuchMethodException | SecurityException
+                            | InterruptedException | ExecutionException e) {
+                        logger.severe("Error processing key: " + e.getMessage());
+                        throw new RuntimeException(e);
+                    } finally {
+                        File file = new File(dstPath);
+                        if (file.exists()) {
+                            file.delete();
+                        }
+                    }
+                });
+            } finally {
+                executor.shutdown();
+                executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+            }
         }
     }
 
     private void createTables(Connection conn) throws IOException {
         var requiredTables = new String[] { "blocks", "entries", "tx", "tx-by-addr", "snapshots" };
-        var columnFamilyName = "x";
 
-        var columnFamily = ColumnFamilyDescriptorBuilder.newBuilder(columnFamilyName.getBytes()).build();
+        var columnFamily = ColumnFamilyDescriptorBuilder.newBuilder(COLUMN_FAMILY).build();
         for (var table : requiredTables) {
             var tableName = TableName.valueOf(table);
             if (!conn.getAdmin().tableExists(tableName)) {
@@ -106,139 +173,98 @@ public class CosToHbaseWriter {
         }
     }
 
-    private boolean hasKey(Connection conn, String tbl, String cosKey) {
-        try (Table blocks_status = conn.getTable(TableName.valueOf(tbl))) {
-            Get get = new Get(cosKey.getBytes());
-            Result result = blocks_status.get(get);
-            return !result.isEmpty();
-        } catch (IOException e) {
-            logger.severe("Error checking key: " + e.getMessage());
-            e.printStackTrace();
-            return false;
-        }
-    }
+    private void processBlock(Connection conn, ExecutorService executor, String dstPath)
+            throws IOException, InstantiationException, IllegalAccessException, IllegalArgumentException,
+            InvocationTargetException, NoSuchMethodException, SecurityException, InterruptedException,
+            ExecutionException {
+        Path blockFile = new Path(dstPath);
+        try (SequenceFile.Reader reader = new SequenceFile.Reader(CONFIG_HADOOP,
+                SequenceFile.Reader.file(blockFile))) {
+            ImmutableBytesWritable key = (ImmutableBytesWritable) reader.getKeyClass().getDeclaredConstructor()
+                    .newInstance();
 
-    private void processBlock(Connection conn, String cosKey) {
-        logger.info("Checking block range completion: " + cosKey);
-        if (hasKey(conn, "snapshots", cosKey)) {
-            logger.info("Block range already processed: " + cosKey);
-            return;
-        }
+            List<Future<?>> futures = new ArrayList<>();
 
-        logger.info("Downloading blocks in range: " + cosKey);
-        String dstPath = WORKSPACE + "/" + cosKey;
-        try {
-            CosUtils.downloadByKey(cosKey, dstPath);
+            Result result = null;
+            while (reader.next(key)) {
+                result = (Result) reader.getCurrentValue(result);
 
-            logger.info("Processing blocks range: " + dstPath);
-            Path blockFile = new Path(dstPath);
-            try (SequenceFile.Reader reader = new SequenceFile.Reader(CONFIG_HADOOP,
-                    SequenceFile.Reader.file(blockFile))) {
-                ImmutableBytesWritable key = (ImmutableBytesWritable) reader.getKeyClass().getDeclaredConstructor()
-                        .newInstance();
+                var resultQualifier = result.rawCells()[0].getQualifierArray().clone();
+                var resultKey = key.get().clone();
+                var resultValue = result.value().clone();
 
-                try (Table blocks = conn.getTable(TableName.valueOf("blocks"));
-                        Table blocksStatus = conn.getTable(TableName.valueOf("snapshots"))) {
-                    Result result = null;
-                    while (reader.next(key)) {
-                        result = (Result) reader.getCurrentValue(result);
+                var ft = executor.submit(() -> {
+                    try (BufferedMutator tx = conn.getBufferedMutator(TableName.valueOf("tx"));
+                            BufferedMutator txByAddr = conn.getBufferedMutator(TableName.valueOf("tx-by-addr"));
+                            Table blocks = conn.getTable(TableName.valueOf("blocks"))) {
 
-                        String rowKey = new String(key.get(), 0, key.getLength());
-
-                        // logger.info("Processing block: " + rowKey + " value size MB: "
-                        // + result.value().length);
-
-                        Put put = new Put(Bytes.toBytes(rowKey));
-                        put.addColumn(Bytes.toBytes("x"), result.rawCells()[0].getQualifierArray(), result.value());
-
+                        Put put = new Put(resultKey);
+                        put.addColumn(COLUMN_FAMILY, resultQualifier, resultValue);
                         blocks.put(put);
 
-                        // Prepare tx and tx-by-addr
-                        try (BufferedMutator tx = conn.getBufferedMutator(TableName.valueOf("tx"));
-                                BufferedMutator txByAddr = conn.getBufferedMutator(TableName.valueOf("tx-by-addr"))) {
-                            BigtableBlock block = new BigtableBlock(rowKey, result.rawCells()[0].getQualifierArray(),
-                                    result.value());
-                            // logger.info(rowKey + " " + block.txs.size() + " " + block.txByAddrs.size());
-                            for (BigtableCell cell : block.txs) {
-                                Put txPut = new Put(cell.key().getBytes());
-                                txPut.addColumn("x".getBytes(), "bin".getBytes(), cell.value());
-                                tx.mutate(txPut);
-                            }
-                            for (BigtableCell cell : block.txByAddrs) {
-                                Put txByAddrPut = new Put(cell.key().getBytes());
-                                txByAddrPut.addColumn("x".getBytes(), "proto".getBytes(), cell.value());
-                                txByAddr.mutate(txByAddrPut);
-                            }
+                        String rowKey = new String(resultKey, 0, resultKey.length);
+                        BigtableBlock block = new BigtableBlock(rowKey,
+                                resultQualifier,
+                                resultValue);
+                        for (BigtableCell cell : block.txs) {
+                            Put txPut = new Put(cell.key().getBytes());
+                            txPut.addColumn(COLUMN_FAMILY, BIN_QUALIFIER, cell.value());
+                            tx.mutate(txPut);
                         }
+                        for (BigtableCell cell : block.txByAddrs) {
+                            Put txByAddrPut = new Put(cell.key().getBytes());
+                            txByAddrPut.addColumn(COLUMN_FAMILY, PROTO_QUALIFIER, cell.value());
+                            txByAddr.mutate(txByAddrPut);
+                        }
+                    } catch (IOException | IllegalArgumentException | SecurityException e) {
+                        logger.severe("Error processing key: " + e.getMessage());
+                        throw new RuntimeException(e);
                     }
-                    // Insert marker for block completion
-                    Put put_status = new Put(Bytes.toBytes(cosKey));
-                    put_status.addColumn("x".getBytes(), "status".getBytes(), new byte[] {});
-
-                    blocksStatus.put(put_status);
-                }
-            } catch (IOException | InstantiationException | IllegalAccessException | IllegalArgumentException
-                    | InvocationTargetException | NoSuchMethodException | SecurityException e) {
-                logger.severe("Error processing blocks file: " + e.getMessage());
-                e.printStackTrace();
+                });
+                futures.add(ft);
             }
-        } finally {
-            // TODO: refactor into try-with-resources
-            File file = new File(dstPath);
-            if (file.exists()) {
-                file.delete();
+            for (Future<?> future : futures) {
+                // Wait for all futures to complete
+                future.get();
             }
         }
     }
 
-    private void processEntries(Connection conn, String cosKey) {
-        logger.info("Checking entries range completion: " + cosKey);
-        if (hasKey(conn, "snapshots", cosKey)) {
-            logger.info("Entries range already processed: " + cosKey);
-            return;
-        }
+    private void processEntries(Connection conn, ExecutorService executor, String dstPath)
+            throws IOException, InstantiationException, IllegalAccessException, IllegalArgumentException,
+            InvocationTargetException, NoSuchMethodException, SecurityException, InterruptedException,
+            ExecutionException {
+        Path entriesFile = new Path(dstPath);
+        try (SequenceFile.Reader reader = new SequenceFile.Reader(CONFIG_HADOOP,
+                SequenceFile.Reader.file(entriesFile))) {
+            ImmutableBytesWritable key = (ImmutableBytesWritable) reader.getKeyClass().getDeclaredConstructor()
+                    .newInstance();
 
-        logger.info("Downloading entries: " + cosKey);
-        String dstPath = WORKSPACE + "/" + cosKey;
-        try {
-            CosUtils.downloadByKey(cosKey, dstPath);
+            List<Future<?>> futures = new ArrayList<>();
 
-            logger.info("Processing entries in range: " + dstPath);
-            Path entriesFile = new Path(dstPath);
-            try (SequenceFile.Reader reader = new SequenceFile.Reader(CONFIG_HADOOP,
-                    SequenceFile.Reader.file(entriesFile))) {
-                ImmutableBytesWritable key = (ImmutableBytesWritable) reader.getKeyClass().getDeclaredConstructor()
-                        .newInstance();
+            Result result = null;
+            while (reader.next(key)) {
+                result = (Result) reader.getCurrentValue(result);
 
-                try (BufferedMutator entries = conn.getBufferedMutator(TableName.valueOf("entries"));
-                        BufferedMutator entriesStatus = conn.getBufferedMutator(TableName.valueOf("snapshots"))) {
-                    Result result = null;
-                    while (reader.next(key)) {
-                        result = (Result) reader.getCurrentValue(result);
+                var resultQualifier = result.rawCells()[0].getQualifierArray().clone();
+                var resultKey = key.get().clone();
+                var resultValue = result.value().clone();
 
-                        String rowKey = new String(key.get(), 0, key.getLength());
-
-                        Put put = new Put(Bytes.toBytes(rowKey));
-                        put.addColumn(Bytes.toBytes("x"), result.rawCells()[0].getQualifierArray(), result.value());
-
-                        entries.mutate(put);
+                var ft = executor.submit(() -> {
+                    try (Table entries = conn.getTable(TableName.valueOf("entries"))) {
+                        Put put = new Put(resultKey);
+                        put.addColumn(COLUMN_FAMILY, resultQualifier, resultValue);
+                        entries.put(put);
+                    } catch (IOException | IllegalArgumentException | SecurityException e) {
+                        logger.severe("Error processing key: " + e.getMessage());
+                        throw new RuntimeException(e);
                     }
-                    // Insert marker for entries completion
-                    Put put_status = new Put(Bytes.toBytes(cosKey));
-                    put_status.addColumn("x".getBytes(), "status".getBytes(), new byte[] {});
-
-                    entriesStatus.mutate(put_status);
-                }
-            } catch (IOException | InstantiationException | IllegalAccessException | IllegalArgumentException
-                    | InvocationTargetException | NoSuchMethodException | SecurityException e) {
-                logger.severe("Error processing entries file: " + e.getMessage());
-                e.printStackTrace();
+                });
+                futures.add(ft);
             }
-        } finally {
-            // TODO: refactor into try-with-resources
-            File file = new File(dstPath);
-            if (file.exists()) {
-                file.delete();
+            for (Future<?> future : futures) {
+                // Wait for all futures to complete
+                future.get();
             }
         }
     }
