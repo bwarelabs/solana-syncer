@@ -60,10 +60,8 @@ public class App {
     }
 
     if (readSource.equals("local-files")) {
-      String storagePath = Utils.getRequiredProperty(properties, "geyser-plugin.input-directory");
-      logger.info("Reading data from local files from path " + storagePath);
       try {
-        GeyserPluginToCosWriter.watchDirectory(Path.of(storagePath));
+        GeyserPluginToCosWriter.watchDirectory();
         logger.info("Done!");
       } catch (Exception e) {
         logger.severe(String.format("An error occurred while reading data from local files: %s", e));

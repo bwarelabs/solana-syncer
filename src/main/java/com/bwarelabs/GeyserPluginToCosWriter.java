@@ -9,7 +9,9 @@ import org.apache.hadoop.hbase.mapreduce.ResultSerialization;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Collections;
@@ -41,12 +43,27 @@ import java.util.concurrent.Executors;
  */
 public class GeyserPluginToCosWriter {
     private static final Logger logger = Logger.getLogger(GeyserPluginToCosWriter.class.getName());
-    private static final String syncType = "live_sync";
+    private static final String SYNC_TYPE;
+    private static final String STORAGE_PATH;
 
     private static final ExecutorService fixedThreadPool = Executors.newFixedThreadPool(8);
 
+    static {
+        Properties properties = new Properties();
+        try (InputStream input = new FileInputStream("config.properties")) {
+            properties.load(input);
+        } catch (IOException ex) {
+            logger.severe("Error loading configuration file: " + ex.getMessage());
+            throw new RuntimeException("Error loading configuration file", ex);
+        }
 
-    public static void watchDirectory(Path path) {
+        SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
+        STORAGE_PATH = Utils.getRequiredProperty(properties, "geyser-plugin.input-directory");
+        logger.info("Reading data from local files from path " + STORAGE_PATH);
+    }
+
+    public static void watchDirectory() {
+        Path path = Path.of(STORAGE_PATH);
         logger.info("Uploading existing directories...");
 
         Set<String> directoriesToSkip = new HashSet<>(Arrays.asList());
@@ -121,10 +138,10 @@ public class GeyserPluginToCosWriter {
         String range = String.valueOf(slotRangeDir.getFileName());
 
         try (
-            CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(range, "blocks", syncType);
+            CustomS3FSDataOutputStream blocksStream = new CustomS3FSDataOutputStream(range, "blocks", SYNC_TYPE);
             CustomSequenceFileWriter blocksWriter = new CustomSequenceFileWriter(hadoopConfig, blocksStream);
 
-            CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(range, "entries", syncType);
+            CustomS3FSDataOutputStream entriesStream = new CustomS3FSDataOutputStream(range, "entries", SYNC_TYPE);
             CustomSequenceFileWriter entriesWriter = new CustomSequenceFileWriter(hadoopConfig, entriesStream);
 
             Stream<Path> slotDirs = Files.list(slotRangeDir)
