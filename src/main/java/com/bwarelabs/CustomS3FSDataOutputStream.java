@@ -1,14 +1,10 @@
 package com.bwarelabs;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
-import org.slf4j.LoggerFactory;
-import com.qcloud.cos.model.*;
-import com.qcloud.cos.transfer.*;
 
 import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
-import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 
@@ -26,7 +22,8 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
         logger.info("CustomS3FSDataOutputStream created for key: " + cosPath);
     }
 
-    private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, String range, String tableName, String syncType) throws IOException {
+    private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, String range, String tableName,
+            String syncType) throws IOException {
         super(pipedOutputStream, null);
         this.pipedOutputStream = pipedOutputStream;
         this.pipedInputStream = new PipedInputStream(pipedOutputStream, 30 * 1024 * 1024);

@@ -7,6 +7,8 @@ import com.qcloud.cos.exception.*;
 import com.qcloud.cos.model.*;
 import com.qcloud.cos.internal.SkipMd5CheckStrategy;
 import com.qcloud.cos.region.Region;
+import com.qcloud.cos.transfer.Download;
+import com.qcloud.cos.transfer.TransferManager;
 
 import java.io.*;
 import java.net.SocketException;
@@ -27,8 +29,9 @@ public class CosUtils {
     private static final String REGION;
     private static final String COS_ID_KEY;
     private static final String COS_SECRET_KEY;
-    private static final String SYNC_TYPE; 
+    private static final String SYNC_TYPE;
     private static final int BUFFER_SIZE = 60 * 1024 * 1024; // 60MB
+    private static final int DOWNLOAD_THREAD_COUNT;
 
     private static final int SOCKET_TIMEOUT;
     private static final int CONNECTION_TIMEOUT;
@@ -74,17 +77,25 @@ public class CosUtils {
         SOCKET_TIMEOUT = Integer.parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.socket-timeout"));
         CONNECTION_TIMEOUT = Integer
                 .parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.connection-timeout"));
+        DOWNLOAD_THREAD_COUNT = Integer
+                .parseInt(Utils.getRequiredProperty(properties, "cos-utils.tencent.download-thread-count"));
         THREAD_COUNT = Integer.parseInt(Utils.getRequiredProperty(properties, "bigtable.thread-count"));
         SYNC_TYPE = Utils.getRequiredProperty(properties, "sync.type");
         System.setProperty(SkipMd5CheckStrategy.DISABLE_PUT_OBJECT_MD5_VALIDATION_PROPERTY, "true");
     }
 
-    static ExecutorService createUploadExecutorService() {
-        return Executors.newFixedThreadPool(3 * THREAD_COUNT);
+    static ExecutorService createExecutorService(int threadCount) {
+        return Executors.newFixedThreadPool(threadCount);
+    }
+
+    static TransferManager createTransferManager() {
+        return new TransferManager(cosClient, downloadExecutorService);
     }
 
     public static final COSClient cosClient = createCOSClient();
-    public static final ExecutorService uploadExecutorService = createUploadExecutorService();
+    public static final ExecutorService uploadExecutorService = createExecutorService(3 * THREAD_COUNT);
+    public static final ExecutorService downloadExecutorService = createExecutorService(DOWNLOAD_THREAD_COUNT);
+    public static final TransferManager transferManager = createTransferManager();
 
     public static CompletableFuture<CompleteMultipartUploadResult> uploadToCos(final String key,
             InputStream inputStream, CustomS3FSDataOutputStream outputStream) {
@@ -145,7 +156,8 @@ public class CosUtils {
                             logger.info("Connection timed out  from while loop.");
                             skipError = true;
                         } else if (cause instanceof CosServiceException serviceException) {
-                            if ("ServiceUnavailable".equals(serviceException.getErrorCode()) && serviceException.getStatusCode() == 503) {
+                            if ("ServiceUnavailable".equals(serviceException.getErrorCode())
+                                    && serviceException.getStatusCode() == 503) {
                                 logger.info("Service unavailable (503) error detected.");
                                 skipError = true;
                             }
@@ -186,7 +198,6 @@ public class CosUtils {
                 .withInputStream(byteArrayInputStream)
                 .withPartSize(size)
                 .withLastPart(isLastPart);
-
 
         UploadPartResult uploadPartResult = cosClient.uploadPart(uploadPartRequest);
 
@@ -271,7 +282,8 @@ public class CosUtils {
     }
 
     public static void saveFailedRangesToCos(String tableName, String startRowKey, String endRowKey) {
-        String rangeFileName = String.format("%s/failed/%s_%s.txt", getCheckpointPrefix(tableName), startRowKey, endRowKey);
+        String rangeFileName = String.format("%s/failed/%s_%s.txt", getCheckpointPrefix(tableName), startRowKey,
+                endRowKey);
         String fileContent = String.format("%s_%s\n", startRowKey, endRowKey);
 
         try {
@@ -289,5 +301,55 @@ public class CosUtils {
             logger.severe("Error saving range file to COS: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    @FunctionalInterface
+    interface CosKeyCallback {
+        void call(String key);
+    }
+
+    public static void walkKeysByPrefix(CosKeyCallback callback) {
+        ListObjectsRequest listObjectsRequest = new ListObjectsRequest();
+        listObjectsRequest.setBucketName(BUCKET_NAME);
+
+        ObjectListing objectListing;
+        do {
+            try {
+                objectListing = cosClient.listObjects(listObjectsRequest);
+            } catch (CosServiceException e) {
+                e.printStackTrace();
+                return;
+            } catch (CosClientException e) {
+                e.printStackTrace();
+                return;
+            }
+
+            List<COSObjectSummary> cosObjectSummaries = objectListing.getObjectSummaries();
+            for (COSObjectSummary cosObjectSummary : cosObjectSummaries) {
+                callback.call(cosObjectSummary.getKey());
+            }
+
+            String nextMarker = objectListing.getNextMarker();
+            listObjectsRequest.setMarker(nextMarker);
+        } while (objectListing.isTruncated());
+    }
+
+    public static void downloadByKey(String key, String localFilePath) {
+        GetObjectRequest getObjectRequest = new GetObjectRequest(BUCKET_NAME, key);
+        try {
+            Download download = transferManager.download(getObjectRequest, new File(localFilePath));
+            download.waitForCompletion();
+        } catch (CosClientException e) {
+            e.printStackTrace();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void shutdown() {
+        // will also shutdown CosClient instance
+        transferManager.shutdownNow();
+        downloadExecutorService.shutdown();
+        uploadExecutorService.shutdown();
     }
 }
