@@ -1,4 +1,4 @@
-package com.bwarelabs;
+package com.bwarelabs.common;
 
 import com.google.cloud.bigtable.data.v2.models.*;
 import java.util.List;
@@ -12,7 +12,7 @@ public class BigtableBlock {
     private final byte[] compressedBlock;
 
     public final List<BigtableCell> txs = new ArrayList<>();
-    public final List<BigtableCell> txByAddrs = new ArrayList<>();
+    public final List<BigtableCell> txByAddr = new ArrayList<>();
 
     static {
         System.loadLibrary("solana_bigtable");

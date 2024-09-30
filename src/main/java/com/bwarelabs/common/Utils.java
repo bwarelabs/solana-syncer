@@ -1,4 +1,4 @@
-package com.bwarelabs;
+package com.bwarelabs.common;
 
 import org.apache.hadoop.hbase.CellScanner;
 import org.apache.hadoop.hbase.client.Result;
@@ -22,7 +22,7 @@ public class Utils {
 
         byte[] hashBytes = digest.digest();
         StringBuilder hexString = new StringBuilder();
-        for (byte hashByte: hashBytes) {
+        for (byte hashByte : hashBytes) {
             String hex = Integer.toHexString(0xff & hashByte);
             if (hex.length() == 1)
                 hexString.append('0');
@@ -37,5 +37,18 @@ public class Utils {
             throw new IllegalArgumentException("Missing required configuration property: " + key);
         }
         return value;
+    }
+
+    public static int getRequiredIntegerProperty(Properties properties, String key) {
+        String value = properties.getProperty(key);
+        if (value == null || value.isEmpty()) {
+            throw new IllegalArgumentException("Missing required configuration property: " + key);
+        }
+        return Integer.parseInt(getRequiredProperty(properties, key));
+    }
+
+    public static int getCpuCount() {
+        int cpuCount = Runtime.getRuntime().availableProcessors();
+        return cpuCount;
     }
 }

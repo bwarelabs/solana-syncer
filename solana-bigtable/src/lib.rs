@@ -237,7 +237,7 @@ pub fn generate_upload_vectors(
             .unwrap();
         let cell = env
             .new_object(
-                "com/bwarelabs/BigtableCell",
+                "com/bwarelabs/common/BigtableCell",
                 "(Ljava/lang/String;[B)V",
                 &[(&java_key).into(), (&java_value).into()],
             )
@@ -252,7 +252,7 @@ pub fn generate_upload_vectors(
     }
 
     let tx_by_addrs_java_array: JObject = env
-        .get_field(object, "txByAddrs", "Ljava/util/List;")
+        .get_field(object, "txByAddr", "Ljava/util/List;")
         .unwrap()
         .l()
         .unwrap();
@@ -278,7 +278,7 @@ pub fn generate_upload_vectors(
                 .unwrap();
             let cell = env
                 .new_object(
-                    "com/bwarelabs/BigtableCell",
+                    "com/bwarelabs/common/BigtableCell",
                     "(Ljava/lang/String;[B)V",
                     &[(&java_key).into(), (&java_value).into()],
                 )
@@ -294,7 +294,7 @@ pub fn generate_upload_vectors(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_bwarelabs_BigtableBlock_process<'local>(
+pub extern "system" fn Java_com_bwarelabs_common_BigtableBlock_process<'local>(
     mut env: JNIEnv<'local>,
     object: JObject<'local>,
 ) {
