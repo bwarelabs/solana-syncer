@@ -1,4 +1,4 @@
-package com.bwarelabs;
+package com.bwarelabs.cos2hbase;
 
 import java.io.*;
 import java.util.ArrayList;
@@ -11,7 +11,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -37,32 +36,38 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.serializer.WritableSerialization;
 
-// TODO: refactor to use try-with-resources
-public class CosToHbaseWriter {
+import com.bwarelabs.common.BigtableBlock;
+import com.bwarelabs.common.BigtableCell;
+import com.bwarelabs.common.CloseableExecutorService;
+import com.bwarelabs.common.CosDownloader;
+import com.bwarelabs.common.CosUtils;
+import com.bwarelabs.common.Utils;
 
-    private static final Logger logger = Logger.getLogger(CosToHbaseWriter.class.getName());
+public class Writer {
+
+    private static final Logger logger = Logger.getLogger(Writer.class.getName());
 
     private final byte[] COLUMN_FAMILY = Bytes.toBytes("x");
     private final byte[] BIN_QUALIFIER = Bytes.toBytes("bin");
     private final byte[] PROTO_QUALIFIER = Bytes.toBytes("proto");
 
-    private final String START_KEY;
-    private final String END_KEY;
+    private final int START_KEY;
+    private final int END_KEY;
     private final String WORKSPACE;
     private final int CONFIG_POOL_SIZE;
 
     private final Configuration CONFIG_HBASE;
     private final Configuration CONFIG_HADOOP;
 
-    public CosToHbaseWriter(Properties properties, String startKey, String endKey) throws Exception {
-        LogManager.getLogManager().readConfiguration(
-                CosToHbaseWriter.class.getClassLoader().getResourceAsStream("logging.properties"));
+    private final CosUtils cosUtils;
 
-        START_KEY = startKey != null ? startKey : Utils.getRequiredProperty(properties, "hbase.start-key");
-        END_KEY = endKey != null ? endKey : Utils.getRequiredProperty(properties, "hbase.end-key");
+    public Writer(CosUtils cosUtils, Properties properties, int startKey, int endKey) throws Exception {
+        START_KEY = startKey;
+        END_KEY = endKey;
+
         WORKSPACE = Utils.getRequiredProperty(properties, "hbase.download-dir");
 
-        // HBase configuration
+        // Hbase configuration
         CONFIG_HBASE = HBaseConfiguration.create();
         CONFIG_HBASE.set("hbase.zookeeper.quorum", Utils.getRequiredProperty(properties, "hbase.zookeeper.quorum"));
         CONFIG_HBASE.set("hbase.zookeeper.property.clientPort",
@@ -70,30 +75,31 @@ public class CosToHbaseWriter {
         CONFIG_HBASE.set("hbase.client.keyvalue.maxsize",
                 Utils.getRequiredProperty(properties, "hbase.client.keyvalue.maxsize"));
 
+        // Hadoop configuration
         CONFIG_HADOOP = new Configuration();
         CONFIG_HADOOP.setStrings("io.serializations", ResultSerialization.class.getName(),
                 WritableSerialization.class.getName());
 
-        CONFIG_POOL_SIZE = Integer.parseInt(Utils.getRequiredProperty(properties, "hbase.worker-pool.size"));
+        CONFIG_POOL_SIZE = Utils.getRequiredIntegerProperty(properties, "hbase.worker-pool.size");
+
+        this.cosUtils = cosUtils;
     }
 
     public void write() throws Exception {
         String regex = "range_([0-9a-fA-F]+)";
         Pattern pattern = Pattern.compile(regex);
 
-        int end_boundary = Integer.parseInt(END_KEY, 16);
-        int start_boundary = Integer.parseInt(START_KEY, 16);
+        int end_boundary = END_KEY;
+        int start_boundary = START_KEY;
 
-        try (Connection connection = ConnectionFactory.createConnection(CONFIG_HBASE)) {
+        try (Connection connection = ConnectionFactory.createConnection(CONFIG_HBASE);
+                CloseableExecutorService executor = createExecutor(CONFIG_POOL_SIZE);
+                CosDownloader cosDownloader = cosUtils.createCosDownloader()) {
+            // Create Hbase tables if they don't exist
             createTables(connection);
 
-            BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(2 * CONFIG_POOL_SIZE);
-            ExecutorService executor = new ThreadPoolExecutor(
-                    CONFIG_POOL_SIZE, CONFIG_POOL_SIZE, 0L, TimeUnit.MILLISECONDS, workQueue,
-                    new ThreadPoolExecutor.CallerRunsPolicy());
-
             try (Table snapshots = connection.getTable(TableName.valueOf("snapshots"))) {
-                CosUtils.walkKeysByPrefix((key) -> {
+                cosUtils.walkKeysByPrefix((key) -> {
                     Matcher matcher = pattern.matcher(key);
                     if (!matcher.find()) {
                         return;
@@ -124,24 +130,22 @@ public class CosToHbaseWriter {
                         }
 
                         logger.info("Downloading data in range: " + key);
-                        CosUtils.downloadByKey(key, dstPath);
+                        cosDownloader.downloadByKey(key, dstPath);
 
                         logger.info("Processing data in range: " + key);
                         if (isBlock) {
-                            processBlock(connection, executor, dstPath);
+                            processBlock(connection, executor.getExecutor(), dstPath);
                         }
                         if (isEntries) {
-                            processEntries(connection, executor, dstPath);
+                            processEntries(connection, executor.getExecutor(), dstPath);
                         }
 
-                        // Insert marker for block range completion so we don't reprocess it
+                        // Insert marker for range completion so we don't reprocess it
                         Put put_status = new Put(cosKey);
                         put_status.addColumn(COLUMN_FAMILY, "status".getBytes(), new byte[] {});
                         snapshots.put(put_status);
 
-                    } catch (IOException | InstantiationException | IllegalAccessException | IllegalArgumentException
-                            | InvocationTargetException | NoSuchMethodException | SecurityException
-                            | InterruptedException | ExecutionException e) {
+                    } catch (Exception e) {
                         logger.severe("Error processing key: " + e.getMessage());
                         throw new RuntimeException(e);
                     } finally {
@@ -151,11 +155,16 @@ public class CosToHbaseWriter {
                         }
                     }
                 });
-            } finally {
-                executor.shutdown();
-                executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
             }
         }
+    }
+
+    public static CloseableExecutorService createExecutor(int poolSize) {
+        BlockingQueue<Runnable> workQueue = new ArrayBlockingQueue<>(2 * poolSize);
+        var executor = new ThreadPoolExecutor(
+                poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, workQueue,
+                new ThreadPoolExecutor.CallerRunsPolicy());
+        return new CloseableExecutorService(executor);
     }
 
     private void createTables(Connection conn) throws IOException {
@@ -211,7 +220,7 @@ public class CosToHbaseWriter {
                             txPut.addColumn(COLUMN_FAMILY, BIN_QUALIFIER, cell.value());
                             tx.mutate(txPut);
                         }
-                        for (BigtableCell cell : block.txByAddrs) {
+                        for (BigtableCell cell : block.txByAddr) {
                             Put txByAddrPut = new Put(cell.key().getBytes());
                             txByAddrPut.addColumn(COLUMN_FAMILY, PROTO_QUALIFIER, cell.value());
                             txByAddr.mutate(txByAddrPut);

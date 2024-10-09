@@ -1,6 +1,8 @@
-package com.bwarelabs;
+package com.bwarelabs.common;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
+
+import com.qcloud.cos.model.CompleteMultipartUploadResult;
 
 import java.io.IOException;
 import java.io.PipedInputStream;
@@ -14,17 +16,21 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private final PipedOutputStream pipedOutputStream;
     private final PipedInputStream pipedInputStream;
     private final String cosPath;
-    private CompletableFuture uploadFuture;
+    private final CosUtils cosUtils;
+    private CompletableFuture<CompleteMultipartUploadResult> uploadFuture;
     private boolean controlledClose = false;
 
-    public CustomS3FSDataOutputStream(String range, String tableName, String syncType) throws IOException {
-        this(new PipedOutputStream(), range, tableName, syncType);
+    public CustomS3FSDataOutputStream(CosUtils cosUtils, String range, String tableName, String syncType)
+            throws IOException {
+        this(cosUtils, new PipedOutputStream(), range, tableName, syncType);
         logger.info("CustomS3FSDataOutputStream created for key: " + cosPath);
     }
 
-    private CustomS3FSDataOutputStream(PipedOutputStream pipedOutputStream, String range, String tableName,
+    private CustomS3FSDataOutputStream(CosUtils cosUtils, PipedOutputStream pipedOutputStream, String range,
+            String tableName,
             String syncType) throws IOException {
         super(pipedOutputStream, null);
+        this.cosUtils = cosUtils;
         this.pipedOutputStream = pipedOutputStream;
         this.pipedInputStream = new PipedInputStream(pipedOutputStream, 30 * 1024 * 1024);
         this.cosPath = syncType + "/" + tableName + "/" + range + "/" + tableName + ".seq";
@@ -34,7 +40,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
     private void initiateUpload() {
         logger.info(String.format("Initiating upload for: %s", cosPath));
         try {
-            uploadFuture = CosUtils.uploadToCos(cosPath, pipedInputStream, this);
+            uploadFuture = cosUtils.uploadToCos(cosPath, pipedInputStream, this);
         } catch (Exception e) {
             logger.severe(String.format("Failed to initiate upload %s to S3", cosPath));
             e.printStackTrace();
@@ -49,7 +55,7 @@ public class CustomS3FSDataOutputStream extends FSDataOutputStream {
         pipedOutputStream.close();
     }
 
-    public CompletableFuture<Void> getUploadFuture() {
+    public CompletableFuture<CompleteMultipartUploadResult> getUploadFuture() {
         return uploadFuture;
     }
 

@@ -18,7 +18,7 @@ RUN apt-get update
 RUN apt-get install -y maven vim
 
 RUN mkdir app
-WORKDIR app
+WORKDIR /app
 COPY pom.xml pom.xml
 RUN mvn dependency:resolve
 

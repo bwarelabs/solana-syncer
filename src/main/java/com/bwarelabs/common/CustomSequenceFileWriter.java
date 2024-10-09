@@ -1,4 +1,4 @@
-package com.bwarelabs;
+package com.bwarelabs.common;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
