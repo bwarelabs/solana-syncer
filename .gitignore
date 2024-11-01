@@ -6,3 +6,5 @@ workspace
 
 *.orig
 dependency-reduced-pom.xml
+
+.cos.yaml
