@@ -220,6 +220,11 @@ public class CosUtils implements AutoCloseable {
                 abortMultipartUpload(key, uploadId);
 
                 Throwable cause = e.getCause();
+                /*
+                    There are 2 thread pools connected by a stream. This thread pool uploads data to COS. The other one writes data to the stream.
+                    Since we can get errors during upload, we want to detect errors that can be fixed by just retrying, (e.g. conn timed out, Service unavailable)
+                    and we close the socket marking it as 'controlledClose'. The other thread pool detects this type of closing and starts the retry flow.
+                */
                 boolean skipError = false;
 
                 if (cause instanceof SocketException && cause.getMessage().contains("Connection timed out")) {
@@ -256,8 +261,12 @@ public class CosUtils implements AutoCloseable {
                     logger.severe("Error was not a connection timeout nor a service unavailable error.");
                     throw e;
                 }
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+            } catch (Exception e) {
+                // Generic catch block to capture any other unexpected exceptions
+                logger.severe("An unexpected error occurred: " + e.getMessage());
+                e.printStackTrace();
+                abortMultipartUpload(key, uploadId);
+                throw new RuntimeException("An unexpected error occurred", e);
             }
         }, executorService);
     }
