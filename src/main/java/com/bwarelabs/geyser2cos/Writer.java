@@ -175,6 +175,7 @@ public class Writer implements AutoCloseable {
 
             // Closing writers so the CustomS3FSDataOutputStream creates the futures
             blocksWriter.close();
+            entriesWriter.close();
 
             return CompletableFuture.allOf(
                     blocksStream.getUploadFuture()).thenRunAsync(() -> {
