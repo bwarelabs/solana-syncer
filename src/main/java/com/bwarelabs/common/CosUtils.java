@@ -219,8 +219,16 @@ public class CosUtils implements AutoCloseable {
                 logger.severe("COS Client Exception: " + e.getMessage());
                 abortMultipartUpload(key, uploadId);
 
+                // not a very good way to prevent error suppression for live_sync
+                // keep in mind if we ever decide to change sync types
+                if (SYNC_TYPE.equals("live_sync")) {
+                    logger.severe("Error suppression disabled for live sync");
+                    throw e;
+                }
+
                 Throwable cause = e.getCause();
                 /*
+                    Only for archive sync (bigtable to cos):
                     There are 2 thread pools connected by a stream. This thread pool uploads data to COS. The other one writes data to the stream.
                     Since we can get errors during upload, we want to detect errors that can be fixed by just retrying, (e.g. conn timed out, Service unavailable)
                     and we close the socket marking it as 'controlledClose'. The other thread pool detects this type of closing and starts the retry flow.
@@ -246,21 +254,21 @@ public class CosUtils implements AutoCloseable {
                     }
                 }
 
-                if (skipError) {
-                    outputStream.setControlledClose(true);
-                    try {
-                        outputStream.close();
-                        inputStream.close();
-                    } catch (IOException e1) {
-                        logger.severe("Error closing output stream: " + e1.getMessage());
-                        e1.printStackTrace();
-                    }
-
-                    return null;
-                } else {
+                if (!skipError) {
                     logger.severe("Error was not a connection timeout nor a service unavailable error.");
                     throw e;
                 }
+
+                outputStream.setControlledClose(true);
+                try {
+                    outputStream.close();
+                    inputStream.close();
+                } catch (IOException e1) {
+                    logger.severe("Error closing output stream: " + e1.getMessage());
+                    e1.printStackTrace();
+                }
+
+                return null;
             } catch (Exception e) {
                 // Generic catch block to capture any other unexpected exceptions
                 logger.severe("An unexpected error occurred: " + e.getMessage());
