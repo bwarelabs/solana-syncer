@@ -77,7 +77,7 @@ done
 download_and_extract_archive() {
     local bucket=$1
     local slot=$2
-    local download_dir="/usr/recovery/rocksdb/$slot"
+    local download_dir="/data/recovery/rocksdb/$slot"
     mkdir -p "$download_dir"
     
     local url_base="https://storage.googleapis.com/${bucket#gs://}/$slot"
@@ -86,16 +86,17 @@ download_and_extract_archive() {
     # Try downloading zst first with progress indicator
     if wget --show-progress "$url_base/rocksdb.tar.zst" -P "$download_dir"; then
         echo "Downloaded rocksdb.tar.zst from $bucket for slot $slot"
-        pv "$download_dir/rocksdb.tar.zst" | tar --use-compress-program=unzstd -xvf - -C "$download_dir"
+        echo "Extracting rocksdb.tar.zst..."
+        pv -f -s $(du -sb "$download_dir/rocksdb.tar.zst" | awk '{print $1}') "$download_dir/rocksdb.tar.zst" | tar --use-compress-program=unzstd -xf - -C "$download_dir"
     elif wget --show-progress "$url_base/rocksdb.tar.bz2" -P "$download_dir"; then
         echo "Downloaded rocksdb.tar.bz2 from $bucket for slot $slot"
-        pv "$download_dir/rocksdb.tar.bz2" | tar -I lbzip2 -xf - -C "$download_dir"
+        echo "Extracting rocksdb.tar.bz2..."
+        pv -f -s $(du -sb "$download_dir/rocksdb.tar.bz2" | awk '{print $1}') "$download_dir/rocksdb.tar.bz2" | tar -I lbzip2 -xf - -C "$download_dir"
     else
         echo "Failed to download rocksdb archive from $bucket for slot $slot"
         return 1
     fi
 
-    # Retrieve version.txt with progress indicator
     if curl -# -o "$download_dir/version.txt" "$url_base/version.txt"; then
         echo "Downloaded version.txt for slot $slot"
         cat "$download_dir/version.txt"
@@ -103,7 +104,6 @@ download_and_extract_archive() {
         echo "Failed to download version.txt for slot $slot"
     fi
 
-    # Confirm extraction success
     if [[ -d "$download_dir/rocksdb" ]]; then
         echo "Successfully extracted ledger data for slot $slot"
     else
