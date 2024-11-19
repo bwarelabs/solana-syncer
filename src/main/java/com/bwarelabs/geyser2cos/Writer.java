@@ -26,6 +26,7 @@ import java.util.stream.Stream;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletionException;
 
 /**
  * GeyserPluginToCosWriter class is responsible for reading data from local
@@ -79,34 +80,41 @@ public class Writer implements AutoCloseable {
         try {
             // Process existing directories
             List<CompletableFuture<Void>> futures = Files.list(path)
-                    .filter(Files::isDirectory)
-                    .filter(dir -> !directoriesToSkip.contains(dir.getFileName().toString()))
-                    .map(slotRangeDir -> CompletableFuture
-                            .supplyAsync(() -> processSlotRange(slotRangeDir), executorService)
+                .filter(Files::isDirectory)
+                .filter(dir -> !directoriesToSkip.contains(dir.getFileName().toString()))
+                .map(slotRangeDir -> {
+                    CompletableFuture<Void> future = CompletableFuture.supplyAsync(() -> processSlotRange(slotRangeDir), executorService)
                             .thenComposeAsync(f -> {
                                 if (f == null) {
                                     logger.severe("processSlotRange returned a null CompletableFuture for slot range: " + slotRangeDir.getFileName());
-                                    return CompletableFuture.completedFuture(null);
+                                    return CompletableFuture.failedFuture(new RuntimeException("Null CompletableFuture for slot range: " + slotRangeDir.getFileName()));
                                 }
                                 return f;
-                            }, executorService))
-                    .collect(Collectors.toList());
+                            }, executorService)
+                            .exceptionally(ex -> {
+                                logger.severe("Exception occurred while processing slot range: " + slotRangeDir.getFileName() + ". " + ex.getMessage());
+                                throw new CompletionException(ex);
+                            });
+                    return future;
+                })
+                .collect(Collectors.toList());
 
             CompletableFuture<Void> initialUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
             initialUploads
                 .thenRun(() -> {
-                    boolean hasNullFutures = futures.stream().anyMatch(future -> {
+                    boolean hasFailedFutures = futures.stream().anyMatch(future -> {
                         try {
-                            return future.get() == null;
+                            future.join(); // This will throw an exception if the future failed
+                            return false; 
                         } catch (Exception e) {
                             logger.severe("Exception while checking future's result: " + e.getMessage());
                             e.printStackTrace();
-                            return true; // Treat as a null/failed result for safety
+                            return true;
                         }
                     });
 
-                    if (hasNullFutures) {
-                        logger.severe("One or more slot ranges failed to process (returned null or errored).");
+                    if (hasFailedFutures) {
+                        logger.severe("One or more slot ranges failed to process (errored).");
                     } else {
                         logger.info("Initial slot ranges processed and uploaded.");
                     }
@@ -157,22 +165,23 @@ public class Writer implements AutoCloseable {
 
             CompletableFuture<Void> allUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
             allUploads.thenRun(() -> {
-                boolean hasNullFutures = futures.stream().anyMatch(future -> {
+                boolean hasFailedFutures = futures.stream().anyMatch(future -> {
                     try {
-                        return future.get() == null;
+                        future.join(); // This will throw an exception if the future failed
+                        return false; 
                     } catch (Exception e) {
                         logger.severe("Exception while checking future's result: " + e.getMessage());
                         e.printStackTrace();
-                        return true; // Treat as a null/failed result for safety
+                        return true;
                     }
                 });
 
-                if (hasNullFutures) {
-                    logger.severe("One or more slot ranges failed to process (returned null or errored).");
+                if (hasFailedFutures) {
+                    logger.severe("One or more slot ranges failed to process (errored).");
                 } else {
                     logger.info("All slot ranges processed and uploaded.");
                 }
-            }).join();
+        }).join();
 
         } catch (Exception e) {
             logger.severe(String.format("Error processing directory: %s, %s", path, e.getMessage()));
@@ -213,30 +222,32 @@ public class Writer implements AutoCloseable {
             blocksWriter.close();
             entriesWriter.close();
 
-            return CompletableFuture.allOf(blocksStream.getUploadFuture(), entriesStream.getUploadFuture())
-                    .thenComposeAsync(result -> {
-                        if (blocksStream.getUploadFuture().isCompletedExceptionally() || entriesStream.getUploadFuture().isCompletedExceptionally()) {
-                            logger.severe("One or more uploads failed; skipping deletion for slot range: " + slotRangeDir.getFileName());
-                            logger.severe("Blocks upload future: " + blocksStream.getUploadFuture());
-                            logger.severe("Entries upload future: " + entriesStream.getUploadFuture());
-                            return CompletableFuture.completedFuture(null);
-                        }
+            CompletableFuture<Void> combinedFuture = CompletableFuture.allOf(blocksStream.getUploadFuture(), entriesStream.getUploadFuture())
+            .thenComposeAsync(result -> {
+                if (blocksStream.getUploadFuture().isCompletedExceptionally() || entriesStream.getUploadFuture().isCompletedExceptionally()) {
+                    logger.severe("One or more uploads failed; skipping deletion for slot range: " + slotRangeDir.getFileName());
+                    return CompletableFuture.failedFuture(new RuntimeException("Upload failed for slot range: " + slotRangeDir.getFileName()));
+                }
 
-                        return CompletableFuture.runAsync(() -> {
-                            logger.info("Slot range processed: " + slotRangeDir.getFileName() + ", deleting slot range...");
-                            try {
-                                deleteDirectory(slotRangeDir);
-                                logger.info("Deleted slot range: " + slotRangeDir.getFileName());
-                            } catch (Exception e) {
-                                logger.severe(String.format("Error deleting slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
-                            }
-                        }, executorService);
-                    }, executorService);
+                return CompletableFuture.runAsync(() -> {
+                    logger.info("Slot range processed: " + slotRangeDir.getFileName() + ", deleting slot range...");
+                    try {
+                        deleteDirectory(slotRangeDir);
+                        logger.info("Deleted slot range: " + slotRangeDir.getFileName());
+                    } catch (Exception e) {
+                        logger.severe(String.format("Error deleting slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
+                    }
+                }, executorService);
+            }, executorService);
+
+            return combinedFuture.exceptionally(ex -> {
+                logger.severe("Exception occurred while processing slot range: " + slotRangeDir.getFileName() + ". " + ex.getMessage());
+                throw new CompletionException(ex); 
+            });
         } catch (Exception e) {
-            logger.severe(
-                    String.format("Error processing slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
+             logger.severe(String.format("Error processing slot range: %s, %s", slotRangeDir.getFileName(), e.getMessage()));
             e.printStackTrace();
-            return CompletableFuture.completedFuture(null);
+            return CompletableFuture.failedFuture(e);
         }
     }
 
