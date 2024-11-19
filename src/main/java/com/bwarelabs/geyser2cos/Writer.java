@@ -83,12 +83,35 @@ public class Writer implements AutoCloseable {
                     .filter(dir -> !directoriesToSkip.contains(dir.getFileName().toString()))
                     .map(slotRangeDir -> CompletableFuture
                             .supplyAsync(() -> processSlotRange(slotRangeDir), executorService)
-                            .thenComposeAsync(f -> f, executorService))
+                            .thenComposeAsync(f -> {
+                                if (f == null) {
+                                    logger.severe("processSlotRange returned a null CompletableFuture for slot range: " + slotRangeDir.getFileName());
+                                    return CompletableFuture.completedFuture(null);
+                                }
+                                return f;
+                            }, executorService))
                     .collect(Collectors.toList());
 
             CompletableFuture<Void> initialUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            initialUploads.thenRun(() -> logger.info("Initial slot ranges processed and uploaded."));
-            initialUploads.join();
+            initialUploads
+                .thenRun(() -> {
+                    boolean hasNullFutures = futures.stream().anyMatch(future -> {
+                        try {
+                            return future.get() == null;
+                        } catch (Exception e) {
+                            logger.severe("Exception while checking future's result: " + e.getMessage());
+                            e.printStackTrace();
+                            return true; // Treat as a null/failed result for safety
+                        }
+                    });
+
+                    if (hasNullFutures) {
+                        logger.severe("One or more slot ranges failed to process (returned null or errored).");
+                    } else {
+                        logger.info("Initial slot ranges processed and uploaded.");
+                    }
+                })
+                .join();
 
             logger.info("Uploaded existing directories.");
             logger.info("Starting watch process...");
@@ -133,8 +156,23 @@ public class Writer implements AutoCloseable {
             }
 
             CompletableFuture<Void> allUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            allUploads.thenRun(() -> logger.info("All slot ranges processed and uploaded."))
-                    .join();
+            allUploads.thenRun(() -> {
+                boolean hasNullFutures = futures.stream().anyMatch(future -> {
+                    try {
+                        return future.get() == null;
+                    } catch (Exception e) {
+                        logger.severe("Exception while checking future's result: " + e.getMessage());
+                        e.printStackTrace();
+                        return true; // Treat as a null/failed result for safety
+                    }
+                });
+
+                if (hasNullFutures) {
+                    logger.severe("One or more slot ranges failed to process (returned null or errored).");
+                } else {
+                    logger.info("All slot ranges processed and uploaded.");
+                }
+            }).join();
 
         } catch (Exception e) {
             logger.severe(String.format("Error processing directory: %s, %s", path, e.getMessage()));
