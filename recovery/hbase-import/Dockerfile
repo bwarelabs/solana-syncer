@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     clang \
     pkg-config \
     libssl-dev \
+    libudev-dev \
     build-essential \
     git
 
@@ -35,6 +36,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     netcat \
     wget \
+    pv \
+    libzstd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Google Cloud SDK for gsutil
@@ -55,8 +58,7 @@ COPY entrypoint.sh /usr/recovery/entrypoint.sh
 RUN chmod +x /usr/recovery/download_missing_blocks.sh /usr/recovery/entrypoint.sh
 
 ENV BIGTABLE_EMULATOR_HOST="localhost:50051"
+ENV HBASE_HOST="localhost:9090"
 
 # Define entrypoint
 ENTRYPOINT ["/usr/recovery/entrypoint.sh"]
-
-# CMD ["sleep", "infinity"]

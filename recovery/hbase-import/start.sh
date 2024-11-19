@@ -14,7 +14,20 @@ START_BLOCK=$1
 END_BLOCK=$2
 MOUNT_PATH=$3
 
+if ! [[ $START_BLOCK =~ ^[0-9]+$ ]]; then
+    echo "Error: START_BLOCK must be a decimal number."
+    exit 1
+fi
+
+if ! [[ $END_BLOCK =~ ^[0-9]+$ ]]; then
+    echo "Error: END_BLOCK must be a decimal number."
+    exit 1
+fi
+
+echo "All inputs are valid."
+
 IMAGE_NAME="solana-recovery"
+CONTAINER_NAME="solana-recovery-container"
 
 echo "Building the Docker image: $IMAGE_NAME"
 docker build -t "$IMAGE_NAME" .
@@ -24,14 +37,22 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Check if the container is already running and stop it if necessary
+if [ "$(docker ps -q -f name=$CONTAINER_NAME)" ]; then
+    echo "Stopping existing container..."
+    docker stop $CONTAINER_NAME
+fi
+
+# Remove the existing container if it exists
+if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
+    echo "Removing existing container..."
+    docker rm $CONTAINER_NAME
+fi
+
+
 echo "Running the Docker container: $IMAGE_NAME"
-# docker run -v "$MOUNT_PATH" "$IMAGE_NAME" "$START_BLOCK" "$END_BLOCK"
-
 docker run -d \
- --name "solana-recovery-container" \
- -v "$MOUNT_PATH:$MOUNT_PATH" \
- -v "$HOME/solana-diverse/rocksdb.tar.zst:/usr/recovery/rocksdb/295403492/rocksdb.tar.zst:ro" \
- -v "/data/rocksdb_extracted/rocksdb:/usr/recovery/rocksdb/295403492/rocksdb" \
- "$IMAGE_NAME" "$START_BLOCK" "$END_BLOCK"
-
-
+    --name "$CONTAINER_NAME" \
+    -v "$MOUNT_PATH:$MOUNT_PATH" \
+    -p 50051:50051 \
+    "$IMAGE_NAME" "$START_BLOCK" "$END_BLOCK"

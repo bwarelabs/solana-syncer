@@ -7,27 +7,36 @@ if [ "$#" -ne 4 ]; then
 fi
 
 TABLE_NAME=$1
-START_KEY_HEX=$2
-END_KEY_HEX=$3
+START_KEY=$2
+END_KEY=$3
 OUTPUT_PATH=$4
 ROWS_PER_EXPORT=1000
 
-# Convert START_KEY and END_KEY from hex to decimal for calculation
-START_KEY_DEC=$((16#$START_KEY_HEX))
-END_KEY_DEC=$((16#$END_KEY_HEX))
+if ! [[ $START_KEY =~ ^[0-9]+$ ]]; then
+    echo "Error: START_KEY must be a decimal number."
+    exit 1
+fi
 
-# Loop until START_KEY_DEC reaches END_KEY_DEC
-CURRENT_START_DEC=$START_KEY_DEC
-while [ "$CURRENT_START_DEC" -lt "$END_KEY_DEC" ]; do
+if ! [[ $END_KEY =~ ^[0-9]+$ ]]; then
+    echo "Error: END_KEY must be a decimal number."
+    exit 1
+fi
+
+echo "All inputs are valid."
+
+# Loop until START_KEY reaches END_KEY_DEC
+CURRENT_START=$START_KEY
+while [ "$CURRENT_START" -lt "$END_KEY" ]; do
     # Calculate the next stop key in decimal
-    CURRENT_STOP_DEC=$((CURRENT_START_DEC + ROWS_PER_EXPORT))
-    if [ "$CURRENT_STOP_DEC" -gt "$END_KEY_DEC" ]; then
-        CURRENT_STOP_DEC=$END_KEY_DEC
+    CURRENT_STOP=$((CURRENT_START + ROWS_PER_EXPORT))
+    if [ "$CURRENT_STOP" -gt "$END_KEY" ]; then
+        CURRENT_STOP=$END_KEY
     fi
 
-    # Convert start and stop keys back to hex
-    CURRENT_START_HEX=$(printf "%016X" "$CURRENT_START_DEC")
-    CURRENT_STOP_HEX=$(printf "%016X" "$CURRENT_STOP_DEC")
+    # Convert start and stop keys back to hex and ensure they are lowercase
+    CURRENT_START_HEX=$(printf "%016X" "$CURRENT_START" | tr 'A-F' 'a-f')
+    CURRENT_STOP_HEX=$(printf "%016X" "$CURRENT_STOP" | tr 'A-F' 'a-f')
+
 
     # Define output directory for this export, e.g., /output_path/table_name/range_start_stop
     EXPORT_DIR="${OUTPUT_PATH}/${TABLE_NAME}/range_${CURRENT_START_HEX}_${CURRENT_STOP_HEX}"
@@ -37,7 +46,16 @@ while [ "$CURRENT_START_DEC" -lt "$END_KEY_DEC" ]; do
     hbase org.apache.hadoop.hbase.mapreduce.Export \
         -D hbase.mapreduce.scan.row.start="$CURRENT_START_HEX" \
         -D hbase.mapreduce.scan.row.stop="$CURRENT_STOP_HEX" \
+        -D mapreduce.input.fileinputformat.split.minsize=536870912000 \
         "$TABLE_NAME" "$EXPORT_DIR"
+    # 500GB min split size so there are less chances of multiple part-m-0000x files
+
+    # Check for multiple part-m-0000x files
+    PART_FILES=("$EXPORT_DIR"/part-m-0000*)
+    if [ ${#PART_FILES[@]} -gt 1 ]; then
+        echo "Error: Multiple part-m-0000x files found in $EXPORT_DIR. Stopping script."
+        exit 1
+    fi
 
     # Check for required files before renaming
     if [[ -f "$EXPORT_DIR/part-m-00000" && -f "$EXPORT_DIR/.part-m-00000.crc" && -f "$EXPORT_DIR/_SUCCESS" && -f "$EXPORT_DIR/._SUCCESS.crc" ]]; then
@@ -51,8 +69,9 @@ while [ "$CURRENT_START_DEC" -lt "$END_KEY_DEC" ]; do
         exit 1
     fi
 
-    # Update CURRENT_START_DEC for the next range
-    CURRENT_START_DEC=$CURRENT_STOP_DEC
+    # Update CURRENT_START for the next range
+    CURRENT_START=$CURRENT_STOP
+
 done
 
-echo "Export completed for all ranges from $START_KEY_HEX to $END_KEY_HEX in table $TABLE_NAME."
+echo "Export completed for all ranges from $START_KEY to $END_KEY in table $TABLE_NAME."

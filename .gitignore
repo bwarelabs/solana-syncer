@@ -8,3 +8,5 @@ workspace
 dependency-reduced-pom.xml
 
 .cos.yaml
+
+recovery/tencent-upload/sequencefiles

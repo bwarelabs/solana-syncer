@@ -19,6 +19,7 @@ if [[ $? -ne 0 ]]; then
     echo "download_missing_blocks.sh failed. Exiting..."
     exit 1
 fi
+echo "download_missing_blocks.sh completed successfully."
 
 # Run solana-bigtable-hbase-adapter
 echo "Running solana-bigtable-hbase-adapter..."
@@ -31,7 +32,7 @@ done
 echo "solana-bigtable-hbase-adapter started."
 
 # Iterate over each RocksDB folder and run agave-ledger-tool sequentially
-for slot in /usr/recovery/rocksdb/*; do
+for slot in /data/recovery/rocksdb/*; do
     if [[ -d "$slot" ]]; then
         echo "Processing RocksDB folder: $slot"
         /usr/recovery/agave-ledger-tool bigtable upload "$START_BLOCK" "$END_BLOCK" -l "$slot"
