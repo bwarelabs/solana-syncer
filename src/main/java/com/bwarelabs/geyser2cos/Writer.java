@@ -78,12 +78,22 @@ public class Writer implements AutoCloseable {
         Set<String> directoriesToSkip = new HashSet<>(Arrays.asList());
 
         try {
-            // Process existing directories
-            List<CompletableFuture<Void>> futures = Files.list(path)
+            // List all directories to process
+            List<Path> directories = Files.list(path)
                 .filter(Files::isDirectory)
                 .filter(dir -> !directoriesToSkip.contains(dir.getFileName().toString()))
-                .map(slotRangeDir -> {
-                    CompletableFuture<Void> future = CompletableFuture.supplyAsync(() -> processSlotRange(slotRangeDir), executorService)
+                .collect(Collectors.toList());
+
+            // Store all futures to track errors after processing all batches
+            List<CompletableFuture<Void>> allFutures = new ArrayList<>();
+
+            // Process directories in batches of 10
+            int batchSize = 10;
+            for (int i = 0; i < directories.size(); i += batchSize) {
+                List<Path> batch = directories.subList(i, Math.min(i + batchSize, directories.size()));
+
+                List<CompletableFuture<Void>> futures = batch.stream()
+                    .map(slotRangeDir -> CompletableFuture.supplyAsync(() -> processSlotRange(slotRangeDir), executorService)
                             .thenComposeAsync(f -> {
                                 if (f == null) {
                                     logger.severe("processSlotRange returned a null CompletableFuture for slot range: " + slotRangeDir.getFileName());
@@ -94,34 +104,36 @@ public class Writer implements AutoCloseable {
                             .exceptionally(ex -> {
                                 logger.severe("Exception occurred while processing slot range: " + slotRangeDir.getFileName() + ". " + ex.getMessage());
                                 throw new CompletionException(ex);
-                            });
-                    return future;
-                })
-                .collect(Collectors.toList());
+                            }))
+                    .collect(Collectors.toList());
 
-            CompletableFuture<Void> initialUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
-            initialUploads
-                .thenRun(() -> {
-                    boolean hasFailedFutures = futures.stream().anyMatch(future -> {
-                        try {
-                            future.join(); // This will throw an exception if the future failed
-                            return false; 
-                        } catch (Exception e) {
-                            logger.severe("Exception while checking future's result: " + e.getMessage());
-                            e.printStackTrace();
-                            return true;
-                        }
-                    });
+                // Add batch futures to the master list
+                allFutures.addAll(futures);
 
-                    if (hasFailedFutures) {
-                        logger.severe("One or more slot ranges failed to process (errored).");
-                    } else {
-                        logger.info("Initial slot ranges processed and uploaded.");
-                    }
-                })
-                .join();
+                // Wait for all uploads in the current batch to complete
+                CompletableFuture<Void> batchUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+                batchUploads.join();
+            }
 
-            logger.info("Uploaded existing directories.");
+            // Check for failed futures after all batches have completed
+            boolean hasFailedFutures = allFutures.stream().anyMatch(future -> {
+                try {
+                    future.join(); // This will throw an exception if the future failed
+                    return false;
+                } catch (Exception e) {
+                    logger.severe("Exception while checking future's result: " + e.getMessage());
+                    e.printStackTrace();
+                    return true;
+                }
+            });
+
+            if (hasFailedFutures) {
+                logger.severe("One or more slot ranges failed to process (errored).");
+            } else {
+                logger.info("All slot ranges processed and uploaded successfully.");
+            }
+
+            logger.info("Uploaded all existing directories.");
             logger.info("Starting watch process...");
 
             // Start watching the directory for new subdirectories
@@ -150,7 +162,7 @@ public class Writer implements AutoCloseable {
                         if (Files.isDirectory(child, LinkOption.NOFOLLOW_LINKS)) {
                             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> processSlotRange(child),
                                     executorService);
-                            futures.add(future);
+                            allFutures.add(future);
                         }
                     }
 
@@ -163,9 +175,9 @@ public class Writer implements AutoCloseable {
                 throw new RuntimeException(e);
             }
 
-            CompletableFuture<Void> allUploads = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+            CompletableFuture<Void> allUploads = CompletableFuture.allOf(allFutures.toArray(new CompletableFuture[0]));
             allUploads.thenRun(() -> {
-                boolean hasFailedFutures = futures.stream().anyMatch(future -> {
+                boolean hasFailedFutures2 = allFutures.stream().anyMatch(future -> {
                     try {
                         future.join(); // This will throw an exception if the future failed
                         return false; 
@@ -176,7 +188,7 @@ public class Writer implements AutoCloseable {
                     }
                 });
 
-                if (hasFailedFutures) {
+                if (hasFailedFutures2) {
                     logger.severe("One or more slot ranges failed to process (errored).");
                 } else {
                     logger.info("All slot ranges processed and uploaded.");

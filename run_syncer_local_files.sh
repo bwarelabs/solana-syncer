@@ -16,7 +16,7 @@ if [ "$(sudo docker ps -aq -f name=$CONTAINER_NAME)" ]; then
 	sudo docker rm $CONTAINER_NAME
 fi
 
-sudo docker run --rm --name $CONTAINER_NAME \
+sudo docker run -d --rm --name $CONTAINER_NAME \
 	-e JVM_ARGS="-Xmx26g" \
 	-v ./config.properties:/app/config.properties \
 	-v /data:/data \
