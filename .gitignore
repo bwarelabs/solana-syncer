@@ -9,4 +9,7 @@ dependency-reduced-pom.xml
 
 .cos.yaml
 
-recovery/tencent-upload/sequencefiles
+recovery/sequencefiles/
+recovery/empty_files.log
+recovery/logs.log
+recovery/hbase/setup/hbase_container_id.txt

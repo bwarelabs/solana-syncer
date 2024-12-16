@@ -81,17 +81,25 @@ download_and_extract_archive() {
     mkdir -p "$download_dir"
     
     local url_base="https://storage.googleapis.com/${bucket#gs://}/$slot"
+    local zst_file="$download_dir/rocksdb.tar.zst"
+    local bz2_file="$download_dir/rocksdb.tar.bz2"
+
+    Check if file already exists
+    if [[ -f "$zst_file" || -f "$bz2_file" || -d "$download_dir" ]]; then
+        echo "File or directory for slot $slot already exists, skipping download."
+        return 0
+    fi
 
     echo "Downloading and extracting archive for slot $slot from $bucket"
     # Try downloading zst first with progress indicator
     if wget --show-progress "$url_base/rocksdb.tar.zst" -P "$download_dir"; then
         echo "Downloaded rocksdb.tar.zst from $bucket for slot $slot"
         echo "Extracting rocksdb.tar.zst..."
-        pv -f -s $(du -sb "$download_dir/rocksdb.tar.zst" | awk '{print $1}') "$download_dir/rocksdb.tar.zst" | tar --use-compress-program=unzstd -xf - -C "$download_dir"
+        pv -f -s $(du -sb "$zst_file" | awk '{print $1}') "$zst_file" | tar --use-compress-program=unzstd -xf - -C "$download_dir"
     elif wget --show-progress "$url_base/rocksdb.tar.bz2" -P "$download_dir"; then
         echo "Downloaded rocksdb.tar.bz2 from $bucket for slot $slot"
         echo "Extracting rocksdb.tar.bz2..."
-        pv -f -s $(du -sb "$download_dir/rocksdb.tar.bz2" | awk '{print $1}') "$download_dir/rocksdb.tar.bz2" | tar -I lbzip2 -xf - -C "$download_dir"
+        pv -f -s $(du -sb "$bz2_file" | awk '{print $1}') "$bz2_file" | tar -I lbzip2 -xf - -C "$download_dir"
     else
         echo "Failed to download rocksdb archive from $bucket for slot $slot"
         return 1

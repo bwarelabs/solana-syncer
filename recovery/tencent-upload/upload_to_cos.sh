@@ -17,8 +17,21 @@ if ! coscli config show > /dev/null 2>&1; then
     exit 1
 fi
 
+# Log file for skipped empty files
+LOG_FILE="/app/empty_files.log"
+echo "Logging skipped files to $LOG_FILE"
+> "$LOG_FILE"  # Clear the log file if it exists
+
 # Iterate recursively over each file in the source directory and upload to COS
 find "$SOURCE_DIRECTORY" -type f -name "*.seq" | while read -r file; do
+    # Check file size (in bytes) and skip if <= 500 KB (500 * 1024 bytes)
+    FILE_SIZE=$(stat --printf="%s" "$file")
+    if [ "$FILE_SIZE" -le $((500 * 1024)) ]; then
+        echo "Skipping $file (size: ${FILE_SIZE} bytes, <= 500 KB)"
+        echo "$file" >> "$LOG_FILE"
+        continue
+    fi
+
     # Remove the SOURCE_DIRECTORY prefix to maintain relative path in COS
     RELATIVE_PATH="${file#$SOURCE_DIRECTORY/}"
     
@@ -37,4 +50,5 @@ find "$SOURCE_DIRECTORY" -type f -name "*.seq" | while read -r file; do
     fi
 done
 
-echo "All files uploaded successfully to COS."
+echo "All valid files uploaded successfully to COS."
+echo "Empty files logged to $LOG_FILE."

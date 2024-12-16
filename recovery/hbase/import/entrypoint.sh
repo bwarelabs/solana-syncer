@@ -24,6 +24,7 @@ echo "download_missing_blocks.sh completed successfully."
 # Run solana-bigtable-hbase-adapter
 echo "Running solana-bigtable-hbase-adapter..."
 /usr/recovery/solana-bigtable-hbase-adapter > ./solana-bigtable-hbase-adapter.log 2>&1 &
+ADAPTER_PID=$!
 
 # Wait until solana-bigtable-hbase-adapter is ready
 until nc -z localhost 50051; do
@@ -39,7 +40,8 @@ for slot in /data/recovery/rocksdb/*; do
         
         # Check if agave-ledger-tool succeeded
         if [[ $? -ne 0 ]]; then
-            echo "agave-ledger-tool failed for $slot. Exiting..."
+            echo "agave-ledger-tool failed for $slot. Stopping solana-bigtable-hbase-adapter..."
+            kill $ADAPTER_PID
             exit 1
         fi
     else
@@ -49,5 +51,9 @@ done
 
 echo "All RocksDB folders processed successfully."
 
-# Keep the container running until all background processes finish
-wait
+# Stop the solana-bigtable-hbase-adapter gracefully
+echo "Stopping solana-bigtable-hbase-adapter..."
+kill $ADAPTER_PID
+wait $ADAPTER_PID
+
+echo "solana-bigtable-hbase-adapter stopped. Exiting..."

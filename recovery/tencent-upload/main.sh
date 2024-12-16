@@ -20,7 +20,7 @@ MOUNT_PATH="/app/sequencefiles"
 
 # Build the Docker image
 echo "Building the Docker image: $IMAGE_NAME"
-docker build -t "$IMAGE_NAME" .
+docker build -t "$IMAGE_NAME" ./tencent-upload
 
 if [ $? -ne 0 ]; then
     echo "Failed to build the Docker image. Please check the Dockerfile and try again."
@@ -39,6 +39,8 @@ if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
     docker rm $CONTAINER_NAME
 fi
 
+touch empty_files.log
+
 # Run the Docker container with mounted volumes for files and config
 echo "Running the Docker container to upload files to COS..."
 
@@ -46,5 +48,6 @@ docker run \
     --name "$CONTAINER_NAME" \
     -v "$SOURCE_DIRECTORY:$MOUNT_PATH" \
     -v "$COS_CONFIG_PATH:/root/.cos.yaml" \
+    -v "./empty_files.log:/app/empty_files.log" \
     "$IMAGE_NAME" "$MOUNT_PATH" "$BUCKET_ALIAS" "$BUCKET_PATH"
 

@@ -2,7 +2,7 @@ cos:
   base:
     secretid: secretid
     secretkey: secretkey
-    sessiontoken: 3kNZR4wfjUgOqbHffiQSMw==
+    sessiontoken: sessiontoken 
     protocol: https
     mode: ""
     cvmrolename: ""
