@@ -33,6 +33,8 @@ public class Starter implements Callable<Integer> {
             Writer cosToHbaseWriter = new Writer(cosUtils, properties, startKey, endKey);
             cosToHbaseWriter.write();
         }
+
+        logger.info("Finished cos-to-hbase sync");
         return 0;
     }
 }

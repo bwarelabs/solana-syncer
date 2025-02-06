@@ -15,7 +15,7 @@ RUN sh -c "echo '// updated' >> src/lib.rs && cargo build --release"
 FROM eclipse-temurin:22
 
 RUN apt-get update
-RUN apt-get install -y maven vim
+RUN apt-get install -y maven vim iputils-ping
 
 RUN mkdir app
 WORKDIR /app
