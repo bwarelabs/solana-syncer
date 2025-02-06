@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Usage check
+if [ "$#" -ne 2 ]; then
+  echo "Usage: $0 <start-key> <end-key>"
+  exit 1
+fi
+
 sudo docker build -t solana-syncer .
 
 sudo docker run --rm --name solana-syncer-job \

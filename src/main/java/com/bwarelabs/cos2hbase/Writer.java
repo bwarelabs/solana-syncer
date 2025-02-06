@@ -157,6 +157,7 @@ public class Writer {
                 });
             }
         }
+        logger.info("Finished processing all keys");
     }
 
     public static CloseableExecutorService createExecutor(int poolSize) {
