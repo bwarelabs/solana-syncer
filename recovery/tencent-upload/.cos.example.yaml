@@ -1,0 +1,15 @@
+cos:
+  base:
+    secretid: secretid
+    secretkey: secretkey
+    sessiontoken: sessiontoken 
+    protocol: https
+    mode: ""
+    cvmrolename: ""
+    closeautoswitchhost: ""
+  buckets:
+  - name: name
+    alias: alias
+    region: ""
+    endpoint: endpoint
+    ofs: false
