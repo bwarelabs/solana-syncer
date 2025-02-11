@@ -86,7 +86,7 @@ public class Writer {
     }
 
     public void write() throws Exception {
-        String regex = "range_([0-9a-fA-F]+)";
+        String regex = "range_([0-9a-fA-F]+)_([0-9a-fA-F]+)";
         Pattern pattern = Pattern.compile(regex);
 
         int end_boundary = END_KEY;
@@ -105,8 +105,10 @@ public class Writer {
                         return;
                     }
                     String start = matcher.group(1);
+		            String end = matcher.group(2);
                     int start_value = Integer.parseInt(start, 16);
-                    if (start_value < start_boundary || start_value >= end_boundary) {
+		            int end_value = Integer.parseInt(end, 16);
+                    if (Math.max(start_value, start_boundary) >= Math.min(end_value, end_boundary)) {
                         return;
                     }
 
